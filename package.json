@@ -10,9 +10,11 @@
   },
   "dependencies": {
     "expo": "~54.0.35",
+    "expo-dev-client": "~6.0.21",
     "expo-status-bar": "~3.0.9",
     "react": "19.1.0",
-    "react-native": "0.81.5"
+    "react-native": "0.81.5",
+    "react-native-bluetooth-classic": "^1.73.0-rc.17"
   },
   "devDependencies": {
     "@types/react": "~19.1.0",
