@@ -1,13 +1,10 @@
 import { PermissionsAndroid, Platform } from 'react-native';
 
 /**
- * Android split the Bluetooth permissions at API 31. Below it, scanning is
- * gated behind location access; at and above it, there are dedicated
- * `BLUETOOTH_*` runtime permissions and location is not required.
- *
- * Requesting the wrong set for the OS version gets a silent denial, which
- * surfaces later as an empty device list rather than a permission error — so
- * the version gate matters more than it looks.
+ * Android split the Bluetooth permissions at API 31: below it scanning is gated
+ * behind location access, at and above it there are dedicated `BLUETOOTH_*`
+ * permissions. Requesting the wrong set for the OS version is denied silently
+ * and surfaces later as an empty device list.
  */
 export async function requestBluetoothPermissions(): Promise<boolean> {
   if (Platform.OS !== 'android') return false;

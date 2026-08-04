@@ -1,14 +1,10 @@
 import type { StandardOptions } from 'react-native-bluetooth-classic';
 
 /**
- * ELM327 terminates every response with a `>` prompt character, and separates
- * lines with `\r`. It never sends `\n`.
- *
- * react-native-bluetooth-classic defaults `delimiter` to `"\n"`
- * (StandardOption.java:43), so leaving it alone means no read ever completes and
- * the app hangs with no error. Splitting on `>` instead makes each read event
- * exactly one complete adapter response, which is what lets `sendCommand` pair a
- * request with its reply.
+ * ELM327 ends every reply with a `>` prompt and separates lines with `\r`; it
+ * never sends `\n`. The library defaults `delimiter` to `"\n"`, which would
+ * make reads never complete, so splitting on the prompt is what pairs one read
+ * event with one whole response.
  */
 export const ELM327_CONNECTION_OPTIONS: StandardOptions = {
   connectorType: 'rfcomm',
@@ -19,101 +15,41 @@ export const ELM327_CONNECTION_OPTIONS: StandardOptions = {
   secureSocket: true,
 };
 
-/** Retry shape for clone adapters that reject secure RFCOMM sockets. */
+/** Clone adapters commonly reject secure RFCOMM and need this fallback. */
 export const ELM327_INSECURE_OPTIONS: StandardOptions = {
   ...ELM327_CONNECTION_OPTIONS,
   secureSocket: false,
 };
 
-/** Commands are terminated with a carriage return, never a newline. */
 export const COMMAND_TERMINATOR = '\r';
 
 export type InitStep = {
   cmd: string;
   label: string;
   timeoutMs: number;
-  /**
-   * When false, a failure is logged and the handshake continues. Most `AT`
-   * configuration commands are cosmetic — losing echo-suppression makes parsing
-   * messier but not impossible, so refusing to connect over one would be wrong.
-   */
-  required: boolean;
 };
 
 /**
- * Handshake, in order. Each step waits for the adapter's reply before the next
- * is written.
+ * Adapter configuration. `ATE0` stops the command being echoed back into every
+ * reply and `ATS0` removes the spaces between hex bytes; both simplify parsing
+ * but the app tolerates either setting failing.
  */
-export const INIT_SEQUENCE: InitStep[] = [
-  {
-    cmd: 'ATZ',
-    label: 'Resetting adapter',
-    // A full reset reboots the ELM327 and replays its firmware banner.
-    timeoutMs: 8000,
-    required: false,
-  },
-  {
-    cmd: 'ATE0',
-    label: 'Disabling echo',
-    timeoutMs: 3000,
-    required: false,
-  },
-  {
-    cmd: 'ATL0',
-    label: 'Disabling linefeeds',
-    timeoutMs: 3000,
-    required: false,
-  },
-  {
-    cmd: 'ATS0',
-    // Spaces off yields `410C1AF8` rather than `41 0C 1A F8`.
-    label: 'Disabling spaces',
-    timeoutMs: 3000,
-    required: false,
-  },
-  {
-    cmd: 'ATH0',
-    label: 'Disabling headers',
-    timeoutMs: 3000,
-    required: false,
-  },
-  {
-    cmd: 'ATSP0',
-    label: 'Selecting protocol',
-    timeoutMs: 5000,
-    required: false,
-  },
-  {
-    cmd: '0100',
-    label: 'Contacting ECU',
-    /**
-     * The only required step. `ATSP0` merely arms auto-detection; this first
-     * real OBD query is what forces the adapter to negotiate a protocol with the
-     * vehicle, so it is the earliest point at which "the car is actually
-     * responding" can be established. Negotiation across all protocols is slow.
-     */
-    timeoutMs: 15000,
-    required: true,
-  },
+export const ADAPTER_INIT_SEQUENCE: InitStep[] = [
+  { cmd: 'ATZ', label: 'Resetting adapter', timeoutMs: 8000 },
+  { cmd: 'ATE0', label: 'Disabling echo', timeoutMs: 3000 },
+  { cmd: 'ATL0', label: 'Disabling linefeeds', timeoutMs: 3000 },
+  { cmd: 'ATS0', label: 'Disabling spaces', timeoutMs: 3000 },
+  { cmd: 'ATH0', label: 'Disabling headers', timeoutMs: 3000 },
+  { cmd: 'ATSP0', label: 'Selecting protocol', timeoutMs: 5000 },
 ];
 
 /**
- * Status text the adapter emits that is not an error.
- *
- * `SEARCHING...` and `BUS INIT` appear mid-negotiation and are routinely
- * mistaken for failures — treating them as such is a common cause of a false
- * "connection failed" on a car that was about to answer.
+ * First real OBD query. `ATSP0` only arms auto-detection; this is what forces
+ * the adapter to negotiate with the vehicle, so it is the point at which the
+ * ECU is proven reachable. Searching every protocol is slow.
  */
-export const TRANSIENT_RESPONSES = ['SEARCHING', 'BUS INIT', 'BUSINIT'] as const;
-
-/** Adapter-level failures. */
-export const ERROR_RESPONSES = [
-  'UNABLE TO CONNECT',
-  'CAN ERROR',
-  'BUS ERROR',
-  'DATA ERROR',
-  'BUS BUSY',
-  'FB ERROR',
-  'LV RESET',
-  'STOPPED',
-] as const;
+export const ECU_HANDSHAKE: InitStep = {
+  cmd: '0100',
+  label: 'Contacting ECU',
+  timeoutMs: 15000,
+};

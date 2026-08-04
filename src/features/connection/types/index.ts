@@ -1,22 +1,19 @@
 import type { BluetoothDevice } from 'react-native-bluetooth-classic';
 
-/**
- * Lifecycle of an adapter session.
- *
- * `connecting` covers opening the Bluetooth socket; `initializing` covers the
- * ELM327 handshake that follows. They are separate because the handshake is by
- * far the slower of the two and fails for entirely different reasons — keeping
- * them distinct is what lets the connect screen say which half went wrong.
- */
-export type ObdStatus = 'idle' | 'connecting' | 'initializing' | 'connected' | 'error';
+/** Each link is tracked separately because they fail for unrelated reasons. */
+export type LinkState = 'idle' | 'pending' | 'ready' | 'failed';
+
+export type ObdStatus = 'idle' | 'connecting' | 'connected' | 'error';
 
 export type ObdConnectionState = {
   status: ObdStatus;
+  /** Bluetooth socket plus adapter configuration. */
+  adapter: LinkState;
+  /** Vehicle answering OBD requests. */
+  ecu: LinkState;
   device: BluetoothDevice | null;
-  /** Human-readable failure reason, cleared on the next connect attempt. */
   error: string | null;
-  /** Current handshake step, shown while `status` is `initializing`. */
   progress: string | null;
+  /** Mode 01 PIDs the ECU reports as implemented. */
+  supportedPids: string[];
 };
-
-export type PermissionState = 'unknown' | 'granted' | 'denied';

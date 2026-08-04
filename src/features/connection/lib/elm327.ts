@@ -3,25 +3,25 @@ import RNBluetoothClassic, {
   type BluetoothEventSubscription,
 } from 'react-native-bluetooth-classic';
 
+import { parseResponse, responseModeFor, type ObdResponse } from '@/lib/obd/protocol';
+import { SUPPORT_BLOCK_PIDS, chainsToNextBlock, decodeSupportMask } from '@/lib/obd/supported';
+import { extractPayload } from '@/lib/obd/protocol';
+
 import {
+  ADAPTER_INIT_SEQUENCE,
   COMMAND_TERMINATOR,
+  ECU_HANDSHAKE,
   ELM327_CONNECTION_OPTIONS,
   ELM327_INSECURE_OPTIONS,
-  ERROR_RESPONSES,
-  INIT_SEQUENCE,
 } from './at-commands';
 
-/** Logged to the Metro console so a failed car test is still diagnosable. */
 const LOG_PREFIX = '[ELM327]';
 
 /**
- * Pause after a timeout before writing again.
- *
- * The protocol carries no request ids, so a reply can only be matched to a
- * command by being the next thing to arrive. After a timeout the previous reply
- * may still be in flight, and if it lands once the following command has been
- * written it would satisfy the wrong one. Waiting first means it arrives while
- * nothing is pending, where the reader discards it.
+ * Pause before writing again after a timeout. The protocol has no request ids,
+ * so a reply is matched to a command purely by arrival order; a late reply that
+ * lands after the next write would satisfy the wrong command. Waiting lets it
+ * arrive while nothing is pending, where the reader discards it.
  */
 const RESYNC_DELAY_MS = 300;
 
@@ -31,17 +31,14 @@ type PendingCommand = {
   resolve: (value: string) => void;
   reject: (reason: Error) => void;
   timer: ReturnType<typeof setTimeout>;
-  cmd: string;
 };
 
 export class Elm327Client {
   private readonly device: BluetoothDevice;
   private readSubscription: BluetoothEventSubscription | null = null;
   private pending: PendingCommand | null = null;
-  /** Tail of the command chain. Every send links onto this. */
   private queue: Promise<unknown> = Promise.resolve();
   private disposed = false;
-  /** Set by a timeout; makes the next write resynchronise first. */
   private needsResync = false;
 
   private constructor(device: BluetoothDevice) {
@@ -56,66 +53,104 @@ export class Elm327Client {
     return this.device.name;
   }
 
-  /**
-   * Opens an RFCOMM socket, falling back to an insecure one.
-   *
-   * Cheap ELM327 clones frequently refuse the secure socket that Android
-   * prefers, and fail in a way indistinguishable from "adapter not there". The
-   * retry costs one round-trip and turns a hard failure into a working
-   * connection on a lot of sub-$15 hardware.
-   */
   static async connect(address: string): Promise<Elm327Client> {
     let device: BluetoothDevice;
 
     try {
-      console.log(`${LOG_PREFIX} connecting (secure) to ${address}`);
       device = await RNBluetoothClassic.connectToDevice(address, ELM327_CONNECTION_OPTIONS);
     } catch (secureError) {
       console.log(`${LOG_PREFIX} secure connect failed, retrying insecure:`, describeError(secureError));
       device = await RNBluetoothClassic.connectToDevice(address, ELM327_INSECURE_OPTIONS);
     }
 
-    console.log(`${LOG_PREFIX} socket open to ${device.name} (${device.address})`);
     return new Elm327Client(device);
   }
 
-  /**
-   * Runs the ELM327 handshake. Resolves once the vehicle has answered a real
-   * OBD query; rejects if it never does.
-   */
-  async initialize(onProgress?: (label: string) => void): Promise<void> {
-    // Drain anything the adapter buffered before we attached a reader,
-    // otherwise the first response is whatever the previous session left behind.
+  /** Configures the adapter. Individual steps are allowed to fail. */
+  async initializeAdapter(onProgress?: (label: string) => void): Promise<void> {
     await this.device.clear().catch(() => undefined);
     this.attachReader();
 
-    for (const step of INIT_SEQUENCE) {
+    for (const step of ADAPTER_INIT_SEQUENCE) {
       if (this.disposed) throw new Error('Disconnected during initialization');
       onProgress?.(step.label);
 
       try {
-        const response = await this.sendCommand(step.cmd, step.timeoutMs);
-
-        if (step.required) {
-          const failure = findErrorResponse(response);
-          if (failure) {
-            throw new Error(`Adapter reported "${failure}". Is the ignition on?`);
-          }
-        }
+        await this.sendCommand(step.cmd, step.timeoutMs);
       } catch (error) {
-        if (step.required) throw error;
-        console.log(`${LOG_PREFIX} optional step ${step.cmd} failed, continuing:`, describeError(error));
+        console.log(`${LOG_PREFIX} ${step.cmd} failed, continuing:`, describeError(error));
       }
     }
   }
 
+  /** Proves the vehicle answers. Rejects when it does not. */
+  async connectEcu(): Promise<void> {
+    const raw = await this.sendCommand(ECU_HANDSHAKE.cmd, ECU_HANDSHAKE.timeoutMs);
+    const response = parseResponse(raw);
+
+    if (!response.ok) {
+      throw new Error(`${response.reason}. Check the ignition is on.`);
+    }
+    if (!response.hex.includes('4100')) {
+      throw new Error('The ECU did not answer a standard request.');
+    }
+  }
+
+  /** Runs a command and parses the reply into a hex payload. */
+  async query(command: string, timeoutMs = 5000): Promise<ObdResponse> {
+    const raw = await this.sendCommand(command, timeoutMs);
+    return parseResponse(raw);
+  }
+
   /**
-   * Sends one command and resolves with the adapter's raw reply.
-   *
-   * ELM327 is strictly half-duplex: it processes exactly one command at a time,
-   * and a second write before the first reply arrives corrupts both. Every call
-   * therefore links onto a single promise chain, so concurrent callers queue
-   * instead of interleaving.
+   * Walks the support bitmask chain to find every PID the ECU implements.
+   * Each block advertises whether the following block exists, so the walk stops
+   * at the first block that does not chain onward.
+   */
+  async discoverSupportedPids(): Promise<string[]> {
+    const supported: string[] = [];
+
+    for (const block of SUPPORT_BLOCK_PIDS) {
+      let response: ObdResponse;
+      try {
+        response = await this.query(`01${block}`, 4000);
+      } catch {
+        break;
+      }
+
+      if (!response.ok) break;
+
+      const payload = extractPayload(response.hex, '41', block);
+      if (!payload || payload.length < 4) break;
+
+      const block_pids = decodeSupportMask(block, payload.slice(0, 4));
+      supported.push(...block_pids);
+
+      if (!chainsToNextBlock(block, block_pids)) break;
+    }
+
+    return supported;
+  }
+
+  /** Reads a Mode 09 support mask the same way, for vehicle information. */
+  async discoverSupportedInfoTypes(): Promise<string[]> {
+    try {
+      const response = await this.query('0900', 4000);
+      if (!response.ok) return [];
+
+      const payload = extractPayload(response.hex, '49', '00');
+      if (!payload || payload.length < 4) return [];
+
+      return decodeSupportMask('00', payload.slice(0, 4));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * ELM327 is half-duplex: one command at a time, and a second write before the
+   * first reply corrupts both. Sends link onto a single chain so concurrent
+   * callers queue rather than interleave.
    */
   sendCommand(cmd: string, timeoutMs = 5000): Promise<string> {
     const run = this.queue.then(
@@ -123,8 +158,8 @@ export class Elm327Client {
       () => this.writeAndAwait(cmd, timeoutMs),
     );
 
-    // The chain must survive a rejected command, or one timeout would wedge
-    // every later send. Swallow here; the caller still sees `run` reject.
+    // Swallowed here so one rejection cannot wedge the chain; the caller still
+    // sees `run` reject.
     this.queue = run.then(
       () => undefined,
       () => undefined,
@@ -147,29 +182,18 @@ export class Elm327Client {
 
     try {
       await this.device.disconnect();
-      console.log(`${LOG_PREFIX} disconnected from ${this.device.address}`);
     } catch (error) {
       console.log(`${LOG_PREFIX} disconnect failed:`, describeError(error));
     }
   }
 
-  /**
-   * One read event is one complete response, because the connection splits on
-   * the `>` prompt rather than on newlines.
-   */
   private attachReader(): void {
     this.readSubscription?.remove();
 
     this.readSubscription = this.device.onDataReceived((event) => {
       const data = event.data ?? '';
-      console.log(`${LOG_PREFIX} <<`, JSON.stringify(data));
-
       const entry = this.pending;
-      if (!entry) {
-        // Late reply to a command that already timed out. Dropping it keeps the
-        // next command from resolving against a stale response.
-        return;
-      }
+      if (!entry) return;
 
       this.pending = null;
       clearTimeout(entry.timer);
@@ -181,8 +205,6 @@ export class Elm327Client {
     if (this.disposed) throw new Error('Not connected');
 
     if (this.needsResync) {
-      // Consumed once per timeout, so a permanently dead adapter cannot get
-      // stuck alternating between a discarded reply and a fresh timeout.
       this.needsResync = false;
       await delay(RESYNC_DELAY_MS);
       await this.device.clear().catch(() => undefined);
@@ -193,7 +215,6 @@ export class Elm327Client {
       const entry: PendingCommand = {
         resolve,
         reject,
-        cmd,
         timer: setTimeout(() => {
           if (this.pending === entry) {
             this.pending = null;
@@ -205,7 +226,6 @@ export class Elm327Client {
 
       this.pending = entry;
 
-      console.log(`${LOG_PREFIX} >>`, cmd);
       this.device.write(cmd + COMMAND_TERMINATOR, 'ascii').catch((error: unknown) => {
         if (this.pending === entry) this.pending = null;
         clearTimeout(entry.timer);
@@ -213,12 +233,6 @@ export class Elm327Client {
       });
     });
   }
-}
-
-/** Returns the adapter error contained in a response, if any. */
-export function findErrorResponse(raw: string): string | null {
-  const upper = raw.toUpperCase();
-  return ERROR_RESPONSES.find((marker) => upper.includes(marker)) ?? null;
 }
 
 export function describeError(error: unknown): string {
@@ -229,3 +243,5 @@ export function describeError(error: unknown): string {
   }
   return 'Unknown error';
 }
+
+export { responseModeFor };
