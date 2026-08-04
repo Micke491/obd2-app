@@ -8,7 +8,8 @@ import type { ObdConnectionState } from '../types';
 
 export type ObdConnectionValue = ObdConnectionState & {
   client: Elm327Client | null;
-  connect: () => Promise<boolean>;
+  /** Pass the remembered address to skip the name heuristic entirely. */
+  connect: (preferredAddress?: string | null) => Promise<boolean>;
   disconnect: () => Promise<void>;
 };
 
@@ -36,7 +37,7 @@ export function ObdConnectionProvider({ children }: { children: ReactNode }) {
     if (current) await current.disconnect();
   }, []);
 
-  const connect = useCallback(async (): Promise<boolean> => {
+  const connect = useCallback(async (preferredAddress?: string | null): Promise<boolean> => {
     await teardown();
     setState({ ...IDLE_STATE, status: 'connecting', adapter: 'pending', progress: 'Checking permissions' });
 
@@ -54,7 +55,7 @@ export function ObdConnectionProvider({ children }: { children: ReactNode }) {
     let opened: Elm327Client;
     try {
       setState((prev) => ({ ...prev, progress: 'Looking for adapter' }));
-      const device = await findAdapter();
+      const device = await findAdapter(preferredAddress);
 
       setState((prev) => ({ ...prev, device, progress: `Connecting to ${device.name}` }));
       opened = await Elm327Client.connect(device.address);

@@ -1,29 +1,40 @@
 import { useMemo } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { Screen } from '@/components/screen';
+import { ScreenHeader } from '@/components/screen-header';
+import { AppText } from '@/components/text';
 import { useObdConnection } from '@/features/connection/hooks/use-obd-connection';
+import { useSettings } from '@/features/settings/context/settings-provider';
 import { usePidStream } from '@/hooks/use-pid-stream';
 import { getPidDefinition } from '@/lib/obd/pids';
-import { colors, fonts, spacing } from '@/theme';
+import { useThemedStyles, type Theme } from '@/theme';
 
 import { GaugeTile } from '../components/gauge-tile';
 import { PrimaryGauge } from '../components/primary-gauge';
 
 const RPM = '0C';
-/** Kept short so each gauge refreshes quickly; live data covers the rest. */
-const TILE_PIDS = ['0D', '05', '04', '11', '0F', '42'];
 
 export function DashboardScreen() {
+  const styles = useThemedStyles(createStyles);
   const { client, supportedPids } = useObdConnection();
+  const { settings } = useSettings();
 
   const tilePids = useMemo(
-    () => TILE_PIDS.filter((pid) => supportedPids.length === 0 || supportedPids.includes(pid)),
-    [supportedPids],
+    () =>
+      settings.dashboardPids.filter(
+        (pid) => supportedPids.length === 0 || supportedPids.includes(pid),
+      ),
+    [settings.dashboardPids, supportedPids],
   );
 
+  // Deliberately short: the fewer PIDs in the cycle, the faster each one
+  // refreshes, and a dashboard is only worth reading if it keeps up.
   const streamPids = useMemo(() => [RPM, ...tilePids], [tilePids]);
-  const { samples } = usePidStream(client, streamPids);
+  const { samples } = usePidStream(client, streamPids, {
+    idleGapMs: settings.pollIntervalMs,
+    queryTimeoutMs: settings.queryTimeoutMs,
+  });
 
   const rpm = samples[RPM]?.value ?? null;
   const live = Object.keys(samples).length > 0;
@@ -36,13 +47,11 @@ export function DashboardScreen() {
 
   return (
     <Screen>
-      <View style={styles.status}>
-        <View style={styles.statusLeft}>
-          <View style={[styles.dot, { backgroundColor: live ? colors.live : colors.dim }]} />
-          <Text style={styles.statusText}>{live ? 'LIVE' : 'WAITING'}</Text>
-        </View>
-        <Text style={styles.statusText}>DASHBOARD</Text>
-      </View>
+      <ScreenHeader
+        eyebrow="Live"
+        title="Dashboard"
+        status={live ? 'Reading from the car now' : 'Waiting for the first reading'}
+      />
 
       <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
         <View style={styles.primary}>
@@ -71,60 +80,21 @@ export function DashboardScreen() {
         </View>
 
         {!live ? (
-          <Text style={styles.hint}>Start the engine to see live values.</Text>
+          <AppText variant="caption" tone="muted" style={styles.hint}>
+            Turn the ignition on, or start the engine, to see values here.
+          </AppText>
         ) : null}
       </ScrollView>
     </Screen>
   );
 }
 
-const styles = StyleSheet.create({
-  status: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: spacing.md,
-    paddingBottom: spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.hairline,
-  },
-  statusLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  statusText: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    letterSpacing: 2,
-    color: colors.dim,
-  },
-  body: {
-    paddingVertical: spacing.lg,
-    gap: spacing.xl,
-  },
-  primary: {
-    alignItems: 'center',
-  },
-  grid: {
-    gap: spacing.sm,
-  },
-  row: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-  },
-  spacer: {
-    flex: 1,
-  },
-  hint: {
-    fontFamily: fonts.body,
-    fontSize: 13,
-    color: colors.dim,
-    textAlign: 'center',
-  },
-});
+const createStyles = (t: Theme) =>
+  StyleSheet.create({
+    body: { gap: t.space.xl, paddingBottom: t.space.xl },
+    primary: { alignItems: 'center', paddingVertical: t.space.md },
+    grid: { gap: t.space.md },
+    row: { flexDirection: 'row', gap: t.space.md },
+    spacer: { flex: 1 },
+    hint: { textAlign: 'center' },
+  });

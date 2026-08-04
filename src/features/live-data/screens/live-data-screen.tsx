@@ -1,179 +1,190 @@
-import { useMemo, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
+import { useCallback, useMemo } from 'react';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 
+import { EmptyState } from '@/components/empty-state';
+import { Meter } from '@/components/meter';
 import { Screen } from '@/components/screen';
+import { ScreenHeader } from '@/components/screen-header';
+import { AppText } from '@/components/text';
 import { useObdConnection } from '@/features/connection/hooks/use-obd-connection';
-import { usePidStream } from '@/hooks/use-pid-stream';
-import { PID_DEFINITIONS, formatPidValue, type PidDefinition } from '@/lib/obd/pids';
-import { TOUCH_TARGET, colors, fonts, radius, spacing } from '@/theme';
+import { useSettings } from '@/features/settings/context/settings-provider';
+import { usePidStream, type PidSample } from '@/hooks/use-pid-stream';
+import { useUnits } from '@/hooks/use-units';
+import { getPidDefinition, type PidDefinition } from '@/lib/obd/pids';
+import { NO_VALUE, gaugeFraction } from '@/lib/units';
+import { useTheme, useThemedStyles, type Theme } from '@/theme';
 
+/**
+ * The working set: a small, user-chosen list shown large and refreshed fast.
+ *
+ * Browsing every sensor is the All sensors screen's job. Keeping these two
+ * apart is what lets this one poll a handful of PIDs several times a second
+ * instead of crawling round sixty.
+ */
 export function LiveDataScreen() {
+  const router = useRouter();
+  const theme = useTheme();
+  const styles = useThemedStyles(createStyles);
   const { client, supportedPids } = useObdConnection();
-  const [pinned, setPinned] = useState<string[]>([]);
+  const { settings, update } = useSettings();
 
-  const available = useMemo<PidDefinition[]>(() => {
-    if (supportedPids.length === 0) return PID_DEFINITIONS;
-    return PID_DEFINITIONS.filter((definition) => supportedPids.includes(definition.pid));
-  }, [supportedPids]);
-
-  // Pinning narrows the cycle, and a shorter cycle means each pinned value
-  // refreshes proportionally faster.
-  const streamPids = useMemo(
-    () => (pinned.length > 0 ? pinned : available.map((definition) => definition.pid)),
-    [pinned, available],
+  const pinned = useMemo(
+    () =>
+      settings.pinnedPids.filter(
+        (pid) => getPidDefinition(pid) && (supportedPids.length === 0 || supportedPids.includes(pid)),
+      ),
+    [settings.pinnedPids, supportedPids],
   );
 
-  const { samples } = usePidStream(client, streamPids);
+  const { samples, cycles } = usePidStream(client, pinned, {
+    idleGapMs: settings.pollIntervalMs,
+    queryTimeoutMs: settings.queryTimeoutMs,
+  });
 
-  const togglePin = (pid: string) => {
-    setPinned((prev) => (prev.includes(pid) ? prev.filter((entry) => entry !== pid) : [...prev, pid]));
-  };
+  const unpin = useCallback(
+    (pid: string) => update({ pinnedPids: settings.pinnedPids.filter((entry) => entry !== pid) }),
+    [settings.pinnedPids, update],
+  );
+
+  const rate = pinned.length > 0 && cycles > 0 ? `${pinned.length} sensors · ${cycles} passes` : null;
 
   return (
     <Screen>
-      <View style={styles.header}>
-        <Text style={styles.title}>Live data</Text>
-        <Text style={styles.subtitle}>
-          {available.length} sensor{available.length === 1 ? '' : 's'}
-          {pinned.length > 0 ? ` · ${pinned.length} pinned` : ''}
-        </Text>
-      </View>
-
-      {pinned.length > 0 ? (
-        <Pressable onPress={() => setPinned([])} style={styles.clearPins}>
-          <Text style={styles.clearPinsText}>Show all sensors</Text>
-        </Pressable>
-      ) : null}
-
-      <FlatList
-        data={available}
-        keyExtractor={(definition) => definition.pid}
-        contentContainerStyle={styles.list}
-        showsVerticalScrollIndicator={false}
-        ListEmptyComponent={<Text style={styles.empty}>No sensors reported by this vehicle.</Text>}
-        renderItem={({ item }) => {
-          const sample = samples[item.pid];
-          const isPinned = pinned.includes(item.pid);
-          const display = sample
-            ? (sample.text ?? formatPidValue(item, sample.value))
-            : '––';
-
-          return (
-            <Pressable
-              onPress={() => togglePin(item.pid)}
-              style={({ pressed }) => [styles.row, isPinned && styles.rowPinned, pressed && styles.rowPressed]}
-              accessibilityRole="button"
-              accessibilityLabel={`${item.name}${isPinned ? ', pinned' : ''}`}
-            >
-              <View style={styles.rowText}>
-                <Text style={styles.name} numberOfLines={1}>
-                  {item.name}
-                </Text>
-                <Text style={styles.pid}>PID 01{item.pid}</Text>
-              </View>
-
-              <View style={styles.reading}>
-                <Text style={styles.value} allowFontScaling={false} numberOfLines={1}>
-                  {display}
-                </Text>
-                {item.unit && !sample?.text ? <Text style={styles.unit}>{item.unit}</Text> : null}
-              </View>
-            </Pressable>
-          );
-        }}
+      <ScreenHeader
+        eyebrow="Live"
+        title="Live data"
+        status={pinned.length === 0 ? 'Nothing chosen yet' : (rate ?? 'Starting…')}
       />
+
+      {pinned.length === 0 ? (
+        <EmptyState
+          icon="playlist-plus"
+          title="No sensors chosen"
+          body="Pick the readings you want to watch and they will appear here, updating as fast as the adapter allows."
+          action={{ label: 'Browse all sensors', onPress: () => router.push('/sensors') }}
+        />
+      ) : (
+        <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
+          {pinned.map((pid) => {
+            const definition = getPidDefinition(pid);
+            if (!definition) return null;
+            return (
+              <LiveRow
+                key={pid}
+                definition={definition}
+                sample={samples[pid]}
+                onRemove={() => unpin(pid)}
+              />
+            );
+          })}
+
+          <Pressable
+            onPress={() => router.push('/sensors')}
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.addRow, pressed && styles.addRowPressed]}
+          >
+            <MaterialCommunityIcons name="plus" size={18} color={theme.color.accentInk} />
+            <AppText variant="bodyStrong" tone="accent">
+              Add a sensor
+            </AppText>
+          </Pressable>
+        </ScrollView>
+      )}
     </Screen>
   );
 }
 
-const styles = StyleSheet.create({
-  header: {
-    paddingTop: spacing.lg,
-    paddingBottom: spacing.md,
-    gap: 2,
-  },
-  title: {
-    fontFamily: fonts.display,
-    fontSize: 30,
-    fontWeight: '700',
-    color: colors.readout,
-  },
-  subtitle: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    letterSpacing: 1,
-    color: colors.dim,
-  },
-  clearPins: {
-    paddingVertical: spacing.sm,
-  },
-  clearPinsText: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    color: colors.amber,
-  },
-  list: {
-    gap: spacing.xs,
-    paddingBottom: spacing.lg,
-  },
-  row: {
-    minHeight: TOUCH_TARGET,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    backgroundColor: colors.panel,
-    borderRadius: radius.sm,
-    borderLeftWidth: 3,
-    borderLeftColor: 'transparent',
-  },
-  rowPinned: {
-    borderLeftColor: colors.amber,
-  },
-  rowPressed: {
-    backgroundColor: colors.panelActive,
-  },
-  rowText: {
-    flex: 1,
-    gap: 1,
-  },
-  name: {
-    fontFamily: fonts.body,
-    fontSize: 14,
-    color: colors.readout,
-  },
-  pid: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    color: colors.dim,
-  },
-  reading: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 4,
-    maxWidth: '45%',
-  },
-  value: {
-    fontFamily: fonts.display,
-    fontSize: 22,
-    fontWeight: '600',
-    color: colors.readout,
-    fontVariant: ['tabular-nums'],
-  },
-  unit: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    color: colors.dim,
-  },
-  empty: {
-    fontFamily: fonts.body,
-    fontSize: 14,
-    color: colors.dim,
-    textAlign: 'center',
-    paddingVertical: spacing.xxl,
-  },
-});
+function LiveRow({
+  definition,
+  sample,
+  onRemove,
+}: {
+  definition: PidDefinition;
+  sample: PidSample | undefined;
+  onRemove: () => void;
+}) {
+  const theme = useTheme();
+  const styles = useThemedStyles(createStyles);
+  const { format } = useUnits();
+
+  const value = sample?.value ?? null;
+  const measurement = value === null ? null : format(definition, value);
+  const display = sample?.text ?? measurement?.text ?? NO_VALUE;
+
+  return (
+    <View style={styles.row}>
+      <View style={styles.rowText}>
+        <AppText variant="bodyStrong" numberOfLines={1}>
+          {definition.name}
+        </AppText>
+        <AppText variant="caption" tone="faint">
+          PID 01{definition.pid}
+        </AppText>
+      </View>
+
+      <View style={styles.rowValue}>
+        <View style={styles.valueLine}>
+          <AppText style={styles.value} numberOfLines={1} adjustsFontSizeToFit>
+            {display}
+          </AppText>
+          {!sample?.text && measurement?.unit ? (
+            <AppText variant="caption" tone="faint">
+              {measurement.unit}
+            </AppText>
+          ) : null}
+        </View>
+        <Meter fraction={gaugeFraction(definition, value)} height={3} />
+      </View>
+
+      <Pressable
+        onPress={onRemove}
+        accessibilityRole="button"
+        accessibilityLabel={`Remove ${definition.name}`}
+        hitSlop={10}
+        style={styles.remove}
+      >
+        <MaterialCommunityIcons name="close" size={18} color={theme.color.inkFaint} />
+      </Pressable>
+    </View>
+  );
+}
+
+const createStyles = (t: Theme) =>
+  StyleSheet.create({
+    body: { gap: t.space.sm, paddingBottom: t.space.xxxl },
+    row: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: t.space.md,
+      padding: t.space.lg,
+      backgroundColor: t.color.surface,
+      borderRadius: t.radius.lg,
+      borderWidth: t.size.hairline,
+      borderColor: t.color.rule,
+    },
+    rowText: { flex: 1, gap: 1 },
+    rowValue: { width: 118, gap: t.space.xs },
+    valueLine: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'flex-end', gap: t.space.xs },
+    value: {
+      fontFamily: t.font.displayBold,
+      fontSize: 24,
+      lineHeight: 28,
+      color: t.color.ink,
+      fontVariant: ['tabular-nums'],
+    },
+    remove: { padding: t.space.xs },
+    addRow: {
+      minHeight: t.size.touch,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: t.space.sm,
+      borderRadius: t.radius.lg,
+      borderWidth: 1,
+      borderStyle: 'dashed',
+      borderColor: t.color.ruleStrong,
+    },
+    addRowPressed: { backgroundColor: t.color.surfaceSunken },
+  });

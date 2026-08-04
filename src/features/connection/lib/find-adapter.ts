@@ -17,16 +17,22 @@ export class NoAdapterError extends Error {}
  * Picks the adapter to connect to.
  *
  * Pairing cannot be done reliably from inside an app, so this only considers
- * already-bonded devices; a recognised name wins, otherwise the single bonded
- * device is used when there is exactly one.
+ * already-bonded devices. The adapter that worked last time wins outright — on
+ * a phone paired with a car stereo, a headset and a dongle, the name heuristic
+ * alone gives up, and remembering turns that dead end into a silent success.
  */
-export async function findAdapter(): Promise<BluetoothDevice> {
+export async function findAdapter(preferredAddress?: string | null): Promise<BluetoothDevice> {
   const enabled = await RNBluetoothClassic.isBluetoothEnabled();
   if (!enabled) {
     await RNBluetoothClassic.requestBluetoothEnabled();
   }
 
   const bonded = await RNBluetoothClassic.getBondedDevices();
+
+  if (preferredAddress) {
+    const remembered = bonded.find((device) => device.address === preferredAddress);
+    if (remembered) return remembered;
+  }
 
   const named = bonded.find(looksLikeObdAdapter);
   if (named) return named;

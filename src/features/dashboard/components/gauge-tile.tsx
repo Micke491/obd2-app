@@ -1,84 +1,70 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 
-import { formatPidValue, type PidDefinition } from '@/lib/obd/pids';
-import { colors, fonts, radius, spacing } from '@/theme';
+import { Meter } from '@/components/meter';
+import { AppText } from '@/components/text';
+import { useUnits } from '@/hooks/use-units';
+import type { PidDefinition } from '@/lib/obd/pids';
+import { NO_VALUE, gaugeFraction } from '@/lib/units';
+import { useThemedStyles, type Theme } from '@/theme';
 
-type GaugeTileProps = {
+export function GaugeTile({
+  definition,
+  value,
+  text,
+}: {
   definition: PidDefinition;
   value: number | null;
   text: string | null;
-};
+}) {
+  const styles = useThemedStyles(createStyles);
+  const { format } = useUnits();
 
-export function GaugeTile({ definition, value, text }: GaugeTileProps) {
-  const display = text ?? (value === null ? '––' : formatPidValue(definition, value));
-  const span = definition.max - definition.min;
-  const fraction = value === null || span <= 0 ? 0 : Math.min(Math.max((value - definition.min) / span, 0), 1);
+  const measurement = value === null ? null : format(definition, value);
+  const display = text ?? measurement?.text ?? NO_VALUE;
+  // Raw value against the raw range: conversion cannot change the fraction.
+  const fraction = gaugeFraction(definition, value);
 
   return (
     <View style={styles.tile}>
-      <Text style={styles.label} numberOfLines={1}>
+      <AppText variant="eyebrow" tone="muted" numberOfLines={1}>
         {definition.short}
-      </Text>
+      </AppText>
 
-      <View style={styles.readingRow}>
-        <Text style={styles.value} allowFontScaling={false} numberOfLines={1}>
+      <View style={styles.valueRow}>
+        <AppText style={styles.value} numberOfLines={1} adjustsFontSizeToFit>
           {display}
-        </Text>
-        {definition.unit && !text ? <Text style={styles.unit}>{definition.unit}</Text> : null}
+        </AppText>
+        {!text && measurement?.unit ? (
+          <AppText variant="caption" tone="faint" style={styles.unit}>
+            {measurement.unit}
+          </AppText>
+        ) : null}
       </View>
 
-      <View style={styles.track}>
-        <View style={[styles.fill, { width: `${fraction * 100}%` }]} />
-      </View>
+      <Meter fraction={fraction} />
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  tile: {
-    flex: 1,
-    minWidth: 0,
-    gap: spacing.xs,
-    padding: spacing.md,
-    backgroundColor: colors.panel,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.hairline,
-  },
-  label: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    letterSpacing: 1.5,
-    textTransform: 'uppercase',
-    color: colors.dim,
-  },
-  readingRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 4,
-  },
-  value: {
-    flexShrink: 1,
-    fontFamily: fonts.display,
-    fontSize: 28,
-    fontWeight: '600',
-    color: colors.readout,
-    fontVariant: ['tabular-nums'],
-  },
-  unit: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    color: colors.dim,
-  },
-  track: {
-    height: 3,
-    borderRadius: 2,
-    backgroundColor: colors.bg,
-    overflow: 'hidden',
-  },
-  fill: {
-    height: '100%',
-    backgroundColor: colors.amber,
-    borderRadius: 2,
-  },
-});
+const createStyles = (t: Theme) =>
+  StyleSheet.create({
+    tile: {
+      flex: 1,
+      gap: t.space.sm,
+      padding: t.space.lg,
+      backgroundColor: t.color.surface,
+      borderRadius: t.radius.lg,
+      borderWidth: t.size.hairline,
+      borderColor: t.color.rule,
+      ...t.shadow.card,
+    },
+    valueRow: { flexDirection: 'row', alignItems: 'baseline', gap: t.space.xs },
+    value: {
+      fontFamily: t.font.displayBold,
+      fontSize: 28,
+      lineHeight: 32,
+      color: t.color.ink,
+      fontVariant: ['tabular-nums'],
+    },
+    unit: { paddingBottom: 2 },
+  });

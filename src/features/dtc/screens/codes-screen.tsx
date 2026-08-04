@@ -1,34 +1,68 @@
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
+import { useMemo } from 'react';
+import { Alert, ScrollView, StyleSheet, View } from 'react-native';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 
 import { Button } from '@/components/button';
+import { Card } from '@/components/card';
+import { EmptyState } from '@/components/empty-state';
+import { Pill } from '@/components/pill';
+import { NavRow } from '@/components/rows';
 import { Screen } from '@/components/screen';
+import { ScreenHeader } from '@/components/screen-header';
+import { AppText } from '@/components/text';
 import { useObdConnection } from '@/features/connection/hooks/use-obd-connection';
-import type { Dtc } from '@/lib/obd/dtc';
-import { TOUCH_TARGET, colors, fonts, radius, spacing } from '@/theme';
+import { SEVERITY_LABELS, resolveDtcDetail, type DtcDetail, type DtcSeverity } from '@/lib/obd/dtc';
+import { useTheme, useThemedStyles, type Theme } from '@/theme';
 
+import { DRIVE_ICON, driveTint, severityTint } from '../components/severity';
 import { useTroubleCodes, type DtcGroup } from '../hooks/use-trouble-codes';
 
-const GROUP_LABELS: Record<DtcGroup, { title: string; hint: string }> = {
-  stored: { title: 'Stored', hint: 'Confirmed faults that turned the light on' },
-  pending: { title: 'Pending', hint: 'Seen once, not yet confirmed' },
-  permanent: { title: 'Permanent', hint: 'Cleared only by the ECU, after repair' },
+const GROUPS: { key: DtcGroup; title: string; hint: string }[] = [
+  { key: 'stored', title: 'Confirmed', hint: 'Faults the car is sure about — these turned the light on.' },
+  { key: 'pending', title: 'Pending', hint: 'Seen once. The car is waiting to see them again before confirming.' },
+  { key: 'permanent', title: 'Permanent', hint: 'Only the car can clear these, and only after a real repair.' },
+];
+
+const SEVERITY_RANK: Record<DtcSeverity, number> = {
+  critical: 0,
+  serious: 1,
+  moderate: 2,
+  minor: 3,
+  informational: 4,
 };
+
+const bySeverity = (a: DtcDetail, b: DtcDetail) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
 
 export function CodesScreen() {
   const router = useRouter();
+  const theme = useTheme();
+  const styles = useThemedStyles(createStyles);
   const { client } = useObdConnection();
   const { codes, loading, error, unsupported, refresh, clearCodes } = useTroubleCodes(client);
 
-  const total = codes.stored.length + codes.pending.length + codes.permanent.length;
+  const resolved = useMemo(() => {
+    const out: Record<DtcGroup, DtcDetail[]> = { stored: [], pending: [], permanent: [] };
+    for (const group of ['stored', 'pending', 'permanent'] as DtcGroup[]) {
+      // Worst first, so the thing that matters is the thing you read.
+      out[group] = codes[group].map((dtc) => resolveDtcDetail(dtc.code)).sort(bySeverity);
+    }
+    return out;
+  }, [codes]);
+
+  const total = resolved.stored.length + resolved.pending.length + resolved.permanent.length;
+  const worst = useMemo(
+    () => [...resolved.stored, ...resolved.pending, ...resolved.permanent].sort(bySeverity)[0] ?? null,
+    [resolved],
+  );
 
   const confirmClear = () => {
     Alert.alert(
-      'Clear trouble codes?',
-      'This erases stored and pending codes and turns off the check engine light.\n\n' +
-        'It also resets all readiness monitors. Until they run again — which can take days of ' +
-        'driving — the car will fail an emissions test. The fault itself is not repaired, and ' +
-        'the code returns if the problem is still present.',
+      'Clear the trouble codes?',
+      'This erases the confirmed and pending codes and turns the check engine light off.\n\n' +
+        'It also resets every readiness monitor. Until those finish running again — which can ' +
+        'take several days of mixed driving — the car will fail an emissions test.\n\n' +
+        'Nothing is repaired by doing this. If the fault is still there, the code comes back.',
       [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Clear codes', style: 'destructive', onPress: () => void clearCodes() },
@@ -38,216 +72,187 @@ export function CodesScreen() {
 
   return (
     <Screen>
-      <View style={styles.header}>
-        <Text style={styles.title}>Trouble codes</Text>
-        <Text style={styles.subtitle}>
-          {loading ? 'Reading…' : total === 0 ? 'No codes found' : `${total} code${total === 1 ? '' : 's'}`}
-        </Text>
-      </View>
+      <ScreenHeader
+        eyebrow="Diagnostics"
+        title="Trouble codes"
+        status={
+          loading
+            ? 'Reading the car…'
+            : total === 0
+              ? 'Nothing stored'
+              : `${total} code${total === 1 ? '' : 's'} found`
+        }
+      />
 
       <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
-        {error ? <Text style={styles.error}>{error}</Text> : null}
+        {error ? (
+          <Card spine={theme.color.danger}>
+            <AppText variant="body" tone="danger">
+              {error}
+            </AppText>
+          </Card>
+        ) : null}
 
-        {(Object.keys(GROUP_LABELS) as DtcGroup[]).map((group) => (
-          <View key={group} style={styles.group}>
-            <View style={styles.groupHeader}>
-              <Text style={styles.groupTitle}>{GROUP_LABELS[group].title}</Text>
-              <Text style={styles.groupCount}>{codes[group].length}</Text>
+        {worst ? (
+          <Card spine={driveTint(worst.drive, theme)}>
+            <View style={styles.summaryHead}>
+              <MaterialCommunityIcons
+                name={DRIVE_ICON[worst.drive]}
+                size={20}
+                color={driveTint(worst.drive, theme)}
+              />
+              <AppText variant="eyebrow" tone="muted">
+                Most urgent right now
+              </AppText>
             </View>
-            <Text style={styles.groupHint}>{GROUP_LABELS[group].hint}</Text>
+            <AppText variant="body" style={styles.summaryText}>
+              {worst.driveNote}
+            </AppText>
+          </Card>
+        ) : null}
 
-            {unsupported.includes(group) ? (
-              <Text style={styles.unsupported}>Not supported by this vehicle</Text>
-            ) : codes[group].length === 0 ? (
-              <Text style={styles.none}>None</Text>
-            ) : (
-              codes[group].map((dtc) => <CodeRow key={`${group}-${dtc.code}`} dtc={dtc} />)
-            )}
-          </View>
-        ))}
+        {!loading && total === 0 && unsupported.length < GROUPS.length ? (
+          <EmptyState
+            icon="check-decagram-outline"
+            tone="good"
+            title="No trouble codes"
+            body="Your car is not reporting any faults. If a warning light is on anyway, it may come from a system a generic scanner cannot reach, such as ABS or the airbags."
+          />
+        ) : null}
+
+        {GROUPS.map((group) => {
+          const list = resolved[group.key];
+          const isUnsupported = unsupported.includes(group.key);
+          if (list.length === 0 && !isUnsupported) return null;
+
+          return (
+            <View key={group.key} style={styles.group}>
+              <View style={styles.groupHead}>
+                <AppText variant="eyebrow" tone="accent">
+                  {group.title}
+                </AppText>
+                <AppText variant="eyebrow" tone="faint">
+                  {isUnsupported ? 'Not supported' : `${list.length}`}
+                </AppText>
+              </View>
+              <AppText variant="caption" tone="muted">
+                {isUnsupported ? 'This car does not answer requests for this list.' : group.hint}
+              </AppText>
+
+              <View style={styles.list}>
+                {list.map((detail) => (
+                  <CodeCard
+                    key={`${group.key}-${detail.code}`}
+                    detail={detail}
+                    onPress={() => router.push(`/code/${detail.code}`)}
+                  />
+                ))}
+              </View>
+            </View>
+          );
+        })}
 
         <View style={styles.links}>
-          <LinkRow label="Freeze frame" hint="Sensor snapshot from when the code set" onPress={() => router.push('/freeze-frame')} />
-          <LinkRow label="Monitors" hint="Readiness and on-board test results" onPress={() => router.push('/monitors')} />
+          <NavRow
+            icon="camera-timer"
+            label="Freeze frame"
+            hint="The sensor readings saved when a fault was recorded"
+            onPress={() => router.push('/freeze-frame')}
+          />
+          <NavRow
+            icon="clipboard-check-outline"
+            label="Readiness monitors"
+            hint="Which self-tests the car has finished running"
+            onPress={() => router.push('/monitors')}
+          />
         </View>
       </ScrollView>
 
       <View style={styles.footer}>
         <View style={styles.footerButton}>
-          <Button label="Refresh" onPress={refresh} variant="secondary" disabled={loading} />
+          <Button
+            label="Read again"
+            onPress={() => void refresh()}
+            variant="secondary"
+            busy={loading}
+            icon="refresh"
+          />
         </View>
         <View style={styles.footerButton}>
-          <Button label="Clear codes" onPress={confirmClear} variant="danger" disabled={loading} />
+          <Button
+            label="Clear codes"
+            onPress={confirmClear}
+            variant="danger"
+            disabled={loading || total === 0}
+          />
         </View>
       </View>
     </Screen>
   );
 }
 
-function CodeRow({ dtc }: { dtc: Dtc }) {
+function CodeCard({ detail, onPress }: { detail: DtcDetail; onPress: () => void }) {
+  const theme = useTheme();
+  const styles = useThemedStyles(createStyles);
+  const tint = severityTint(detail.severity, theme);
+
   return (
-    <View style={styles.codeRow}>
-      <Text style={styles.code}>{dtc.code}</Text>
-      <View style={styles.codeText}>
-        <Text style={styles.codeDescription}>
-          {dtc.description ?? (dtc.manufacturerSpecific ? 'Manufacturer-specific code' : 'No description available')}
-        </Text>
-        <Text style={styles.codeCategory}>
-          {dtc.category}
-          {dtc.manufacturerSpecific ? ' · manufacturer' : ' · generic'}
-        </Text>
+    <Card spine={tint.color} onPress={onPress} accessibilityLabel={`${detail.code}. ${detail.title}`}>
+      <View style={styles.codeHead}>
+        <AppText variant="mono" style={styles.codeText}>
+          {detail.code}
+        </AppText>
+        <Pill
+          label={SEVERITY_LABELS[detail.severity]}
+          color={tint.color}
+          background={tint.wash}
+          filled={detail.severity === 'critical'}
+        />
       </View>
-    </View>
+
+      <AppText variant="subheading" style={styles.codeTitle}>
+        {detail.title}
+      </AppText>
+      <AppText variant="caption" tone="muted" numberOfLines={2}>
+        {detail.meaning}
+      </AppText>
+
+      <View style={styles.codeFoot}>
+        <AppText variant="caption" style={{ color: driveTint(detail.drive, theme) }}>
+          {detail.drive === 'safe-to-drive' ? 'Safe to drive' : 'Read the drive advice'}
+        </AppText>
+        <MaterialCommunityIcons name="chevron-right" size={18} color={theme.color.inkFaint} />
+      </View>
+    </Card>
   );
 }
 
-function LinkRow({ label, hint, onPress }: { label: string; hint: string; onPress: () => void }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      style={({ pressed }) => [styles.linkRow, pressed && styles.rowPressed]}
-    >
-      <View style={styles.codeText}>
-        <Text style={styles.linkLabel}>{label}</Text>
-        <Text style={styles.codeCategory}>{hint}</Text>
-      </View>
-      <Text style={styles.chevron}>›</Text>
-    </Pressable>
-  );
-}
-
-const styles = StyleSheet.create({
-  header: {
-    paddingTop: spacing.lg,
-    paddingBottom: spacing.md,
-    gap: 2,
-  },
-  title: {
-    fontFamily: fonts.display,
-    fontSize: 30,
-    fontWeight: '700',
-    color: colors.readout,
-  },
-  subtitle: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    letterSpacing: 1,
-    color: colors.dim,
-  },
-  body: {
-    gap: spacing.lg,
-    paddingBottom: spacing.lg,
-  },
-  error: {
-    fontFamily: fonts.body,
-    fontSize: 13,
-    color: colors.redline,
-  },
-  group: {
-    gap: spacing.xs,
-  },
-  groupHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  groupTitle: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    letterSpacing: 2,
-    textTransform: 'uppercase',
-    color: colors.amber,
-  },
-  groupCount: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    color: colors.dim,
-  },
-  groupHint: {
-    fontFamily: fonts.body,
-    fontSize: 12,
-    color: colors.dim,
-    marginBottom: spacing.xs,
-  },
-  none: {
-    fontFamily: fonts.body,
-    fontSize: 13,
-    color: colors.dim,
-  },
-  unsupported: {
-    fontFamily: fonts.body,
-    fontSize: 13,
-    color: colors.dim,
-    fontStyle: 'italic',
-  },
-  codeRow: {
-    flexDirection: 'row',
-    gap: spacing.md,
-    padding: spacing.md,
-    backgroundColor: colors.panel,
-    borderRadius: radius.sm,
-    marginTop: spacing.xs,
-  },
-  code: {
-    fontFamily: fonts.mono,
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.redline,
-    letterSpacing: 0.5,
-  },
-  codeText: {
-    flex: 1,
-    gap: 2,
-  },
-  codeDescription: {
-    fontFamily: fonts.body,
-    fontSize: 14,
-    lineHeight: 19,
-    color: colors.readout,
-  },
-  codeCategory: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    color: colors.dim,
-  },
-  links: {
-    gap: spacing.xs,
-    borderTopWidth: 1,
-    borderTopColor: colors.hairline,
-    paddingTop: spacing.lg,
-  },
-  linkRow: {
-    minHeight: TOUCH_TARGET,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    backgroundColor: colors.panel,
-    borderRadius: radius.sm,
-  },
-  rowPressed: {
-    backgroundColor: colors.panelActive,
-  },
-  linkLabel: {
-    fontFamily: fonts.body,
-    fontSize: 15,
-    color: colors.readout,
-  },
-  chevron: {
-    fontFamily: fonts.body,
-    fontSize: 22,
-    color: colors.dim,
-  },
-  footer: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-    paddingVertical: spacing.md,
-  },
-  footerButton: {
-    flex: 1,
-  },
-});
+const createStyles = (t: Theme) =>
+  StyleSheet.create({
+    body: { gap: t.space.xl, paddingBottom: t.space.xl },
+    summaryHead: { flexDirection: 'row', alignItems: 'center', gap: t.space.sm },
+    summaryText: { marginTop: t.space.sm },
+    group: { gap: t.space.xs },
+    groupHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    list: { gap: t.space.sm, marginTop: t.space.sm },
+    codeHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    codeText: { fontSize: 17, letterSpacing: 1 },
+    codeTitle: { marginTop: t.space.sm, marginBottom: 2 },
+    codeFoot: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginTop: t.space.md,
+      paddingTop: t.space.md,
+      borderTopWidth: t.size.hairline,
+      borderTopColor: t.color.rule,
+    },
+    links: {
+      gap: t.space.sm,
+      paddingTop: t.space.lg,
+      borderTopWidth: t.size.hairline,
+      borderTopColor: t.color.rule,
+    },
+    footer: { flexDirection: 'row', gap: t.space.sm, paddingVertical: t.space.md },
+    footerButton: { flex: 1 },
+  });

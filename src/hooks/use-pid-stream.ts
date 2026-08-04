@@ -18,8 +18,19 @@ export type PidStream = {
   cycles: number;
 };
 
-const IDLE_GAP_MS = 40;
-const QUERY_TIMEOUT_MS = 2500;
+export type PidStreamOptions = {
+  idleGapMs?: number;
+  queryTimeoutMs?: number;
+  /** Pause without unmounting, e.g. while the screen is not focused. */
+  enabled?: boolean;
+};
+
+const DEFAULT_IDLE_GAP_MS = 40;
+const DEFAULT_QUERY_TIMEOUT_MS = 2500;
+/** Samples land in a buffer and paint on this cadence, not one render each. */
+const FLUSH_MS = 200;
+
+const EMPTY: PidStream = { samples: {}, error: null, cycles: 0 };
 
 /**
  * Streams a set of PIDs by cycling through them one at a time.
@@ -28,21 +39,67 @@ const QUERY_TIMEOUT_MS = 2500;
  * values in a set are read sequentially rather than simultaneously; each sample
  * carries its own timestamp instead of implying they share one. Requesting
  * fewer PIDs raises the refresh rate of each.
+ *
+ * The requested set is read from a ref at the top of every cycle rather than
+ * being an effect dependency. A screen that changes its set as you scroll would
+ * otherwise tear down and restart the loop mid-query on every scroll frame.
  */
-export function usePidStream(client: Elm327Client | null, pids: string[]): PidStream {
-  const [stream, setStream] = useState<PidStream>({ samples: {}, error: null, cycles: 0 });
+export function usePidStream(
+  client: Elm327Client | null,
+  pids: string[],
+  options: PidStreamOptions = {},
+): PidStream {
+  const { idleGapMs = DEFAULT_IDLE_GAP_MS, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS, enabled = true } = options;
+
+  const [stream, setStream] = useState<PidStream>(EMPTY);
   const pidsKey = pids.join(',');
-  const cyclesRef = useRef(0);
+  const orderRef = useRef<string[]>(pids);
+  const optionsRef = useRef({ idleGapMs, queryTimeoutMs });
 
   useEffect(() => {
-    if (!client || pids.length === 0) return;
+    orderRef.current = pidsKey ? pidsKey.split(',') : [];
+  }, [pidsKey]);
+
+  useEffect(() => {
+    optionsRef.current = { idleGapMs, queryTimeoutMs };
+  }, [idleGapMs, queryTimeoutMs]);
+
+  useEffect(() => {
+    if (!client || !enabled) return;
 
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const order = pidsKey.split(',');
+    let cycles = 0;
+
+    // Buffered so a sixty-row list repaints five times a second rather than
+    // once per query. Values still carry their own read timestamp.
+    const buffer: Record<string, PidSample> = {};
+    let bufferedError: string | null = null;
+    let dirty = false;
+
+    const flushTimer = setInterval(() => {
+      if (!dirty || cancelled) return;
+      dirty = false;
+      const batch = { ...buffer };
+      const error = bufferedError;
+      setStream((prev) => ({
+        samples: { ...prev.samples, ...batch },
+        error,
+        cycles,
+      }));
+    }, FLUSH_MS);
 
     const run = async () => {
       while (!cancelled) {
+        const order = orderRef.current;
+
+        if (order.length === 0) {
+          await new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, FLUSH_MS);
+          });
+          continue;
+        }
+
         for (const pid of order) {
           if (cancelled) return;
 
@@ -50,7 +107,7 @@ export function usePidStream(client: Elm327Client | null, pids: string[]): PidSt
           if (!definition) continue;
 
           try {
-            const response = await client.query(`01${pid}`, QUERY_TIMEOUT_MS);
+            const response = await client.query(`01${pid}`, optionsRef.current.queryTimeoutMs);
             if (cancelled) return;
 
             if (!response.ok) {
@@ -66,32 +123,25 @@ export function usePidStream(client: Elm327Client | null, pids: string[]): PidSt
             const value = definition.decode(data);
             if (value === null || Number.isNaN(value)) continue;
 
-            setStream((prev) => ({
-              ...prev,
-              error: null,
-              samples: {
-                ...prev.samples,
-                [pid]: {
-                  value,
-                  text: definition.describe ? definition.describe(data) : null,
-                  at: Date.now(),
-                },
-              },
-            }));
+            buffer[pid] = {
+              value,
+              text: definition.describe ? definition.describe(data) : null,
+              at: Date.now(),
+            };
+            bufferedError = null;
+            dirty = true;
           } catch (error) {
             if (cancelled) return;
-            setStream((prev) => ({
-              ...prev,
-              error: error instanceof Error ? error.message : 'Read failed',
-            }));
+            bufferedError = error instanceof Error ? error.message : 'Read failed';
+            dirty = true;
           }
         }
 
-        cyclesRef.current += 1;
-        setStream((prev) => ({ ...prev, cycles: cyclesRef.current }));
+        cycles += 1;
+        dirty = true;
 
         await new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, IDLE_GAP_MS);
+          timer = setTimeout(resolve, optionsRef.current.idleGapMs);
         });
       }
     };
@@ -100,9 +150,10 @@ export function usePidStream(client: Elm327Client | null, pids: string[]): PidSt
 
     return () => {
       cancelled = true;
+      clearInterval(flushTimer);
       if (timer) clearTimeout(timer);
     };
-  }, [client, pidsKey]);
+  }, [client, enabled]);
 
   return stream;
 }

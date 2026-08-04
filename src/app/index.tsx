@@ -1,5 +1,5 @@
-import { ConnectScreen } from '@/features/connection/screens/connect-screen';
+import { HubScreen } from '@/features/hub/screens/hub-screen';
 
-export default function ConnectRoute() {
-  return <ConnectScreen />;
+export default function HomeRoute() {
+  return <HubScreen />;
 }

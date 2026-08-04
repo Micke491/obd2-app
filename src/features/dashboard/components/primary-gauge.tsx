@@ -1,81 +1,61 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 
-import { colors, fonts, spacing } from '@/theme';
+import { Meter } from '@/components/meter';
+import { AppText } from '@/components/text';
+import { NO_VALUE } from '@/lib/units';
+import { useTheme, useThemedStyles, type Theme } from '@/theme';
 
 const SCALE_MAX = 8000;
-const REDLINE = 6500;
 const AMBER_FROM = 3500;
+const REDLINE_FROM = 6500;
 
-export function rpmColor(rpm: number | null): string {
-  if (rpm === null) return colors.dim;
-  if (rpm >= REDLINE) return colors.redline;
-  if (rpm >= AMBER_FROM) return colors.amber;
-  return colors.readout;
-}
-
+/** The one reading big enough to read at a glance from the driver's seat. */
 export function PrimaryGauge({ rpm }: { rpm: number | null }) {
-  const tint = rpmColor(rpm);
-  const fraction = rpm === null ? 0 : Math.min(rpm / SCALE_MAX, 1);
+  const theme = useTheme();
+  const styles = useThemedStyles(createStyles);
+
+  const tint =
+    rpm === null
+      ? theme.color.inkFaint
+      : rpm >= REDLINE_FROM
+        ? theme.color.danger
+        : rpm >= AMBER_FROM
+          ? theme.color.accent
+          : theme.color.ink;
 
   return (
     <View style={styles.root}>
-      <Text
-        style={[styles.value, { color: tint }]}
-        allowFontScaling={false}
-        accessibilityLabel={rpm === null ? 'Waiting for engine speed' : `${rpm} revolutions per minute`}
-      >
-        {rpm === null ? '––––' : String(Math.round(rpm))}
-      </Text>
-      <Text style={styles.unit}>RPM</Text>
-
-      <View style={styles.track}>
-        <View style={[styles.fill, { width: `${fraction * 100}%`, backgroundColor: tint }]} />
-        <View style={[styles.redline, { left: `${(REDLINE / SCALE_MAX) * 100}%` }]} />
+      <AppText variant="eyebrow" tone="muted">
+        Engine speed
+      </AppText>
+      <View style={styles.readoutRow}>
+        <AppText style={[styles.readout, { color: tint }]} numberOfLines={1} adjustsFontSizeToFit>
+          {rpm === null ? NO_VALUE : Math.round(rpm).toLocaleString('en-GB')}
+        </AppText>
+        <AppText variant="eyebrow" tone="faint" style={styles.unit}>
+          rpm
+        </AppText>
       </View>
+      <Meter
+        fraction={(rpm ?? 0) / SCALE_MAX}
+        color={tint}
+        height={6}
+        marker={REDLINE_FROM / SCALE_MAX}
+      />
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  root: {
-    alignItems: 'center',
-    width: '100%',
-  },
-  value: {
-    fontFamily: fonts.display,
-    fontSize: 104,
-    fontWeight: '700',
-    lineHeight: 112,
-    letterSpacing: -2,
-    fontVariant: ['tabular-nums'],
-  },
-  unit: {
-    fontFamily: fonts.mono,
-    fontSize: 12,
-    letterSpacing: 6,
-    color: colors.dim,
-    marginTop: -spacing.xs,
-    marginBottom: spacing.md,
-  },
-  track: {
-    width: '100%',
-    height: 5,
-    backgroundColor: colors.panel,
-    borderRadius: 3,
-    overflow: 'hidden',
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  fill: {
-    height: '100%',
-    borderRadius: 3,
-  },
-  redline: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    width: 2,
-    backgroundColor: colors.redline,
-    opacity: 0.7,
-  },
-});
+const createStyles = (t: Theme) =>
+  StyleSheet.create({
+    root: { width: '100%', gap: t.space.sm, alignItems: 'center' },
+    readoutRow: { flexDirection: 'row', alignItems: 'baseline', gap: t.space.sm },
+    readout: {
+      fontFamily: t.font.displayBold,
+      fontSize: 76,
+      lineHeight: 84,
+      letterSpacing: -2,
+      fontVariant: ['tabular-nums'],
+    },
+    unit: { paddingBottom: 8 },
+  });

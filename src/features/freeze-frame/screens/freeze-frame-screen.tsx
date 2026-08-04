@@ -1,18 +1,22 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { Button } from '@/components/button';
+import { EmptyState } from '@/components/empty-state';
 import { Screen } from '@/components/screen';
+import { AppText } from '@/components/text';
 import { useObdConnection } from '@/features/connection/hooks/use-obd-connection';
+import { useUnits } from '@/hooks/use-units';
 import { freezeFrameCommand, parseFreezeFrame, type FreezeFrameEntry } from '@/lib/obd/freeze-frame';
-import { formatPidValue } from '@/lib/obd/pids';
-import { colors, fonts, radius, spacing } from '@/theme';
+import { useThemedStyles, type Theme } from '@/theme';
 
 /** The snapshot the ECU keeps is limited to emissions-relevant sensors. */
 const FRAME_PIDS = ['0C', '0D', '05', '04', '11', '0F', '0B', '10', '06', '07', '03', '0E', '1F', '2F'];
 
 export function FreezeFrameScreen() {
+  const styles = useThemedStyles(createStyles);
   const { client, supportedPids } = useObdConnection();
+  const { format } = useUnits();
   const [entries, setEntries] = useState<FreezeFrameEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [empty, setEmpty] = useState(false);
@@ -46,60 +50,72 @@ export function FreezeFrameScreen() {
   }, [load]);
 
   return (
-    <Screen>
-      <View style={styles.header}>
-        <Text style={styles.title}>Freeze frame</Text>
-        <Text style={styles.subtitle}>Conditions recorded when the fault set</Text>
-      </View>
-
+    <Screen edges={{ top: false }}>
       <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
-        {loading ? <Text style={styles.status}>Reading snapshot…</Text> : null}
+        <View style={styles.intro}>
+          <AppText variant="body" tone="muted">
+            When the car records an emissions fault it saves a snapshot of what every sensor was
+            reading at that exact moment. Reading it back is often the fastest way to tell whether
+            a fault happened cold, hot, at idle or under load.
+          </AppText>
+        </View>
 
-        {!loading && empty ? (
-          <Text style={styles.status}>
-            No freeze frame stored. The ECU only records one when an emissions-related code sets.
-          </Text>
+        {loading && entries.length === 0 ? (
+          <AppText variant="caption" tone="muted" style={styles.status}>
+            Reading the snapshot…
+          </AppText>
         ) : null}
 
-        {entries.map((entry) => (
-          <View key={entry.definition.pid} style={styles.row}>
-            <Text style={styles.name}>{entry.definition.name}</Text>
-            <Text style={styles.value}>
-              {entry.text ?? formatPidValue(entry.definition, entry.value)}
-              {entry.definition.unit && !entry.text ? ` ${entry.definition.unit}` : ''}
-            </Text>
+        {!loading && empty ? (
+          <EmptyState
+            icon="camera-off-outline"
+            title="No snapshot stored"
+            body="The car only records a freeze frame when an emissions-related code sets. Nothing stored usually means nothing has gone wrong."
+          />
+        ) : null}
+
+        {entries.length ? (
+          <View style={styles.list}>
+            {entries.map((entry) => {
+              const measurement = format(entry.definition, entry.value);
+              return (
+                <View key={entry.definition.pid} style={styles.row}>
+                  <AppText variant="body" style={styles.name} numberOfLines={2}>
+                    {entry.definition.name}
+                  </AppText>
+                  <AppText variant="mono" style={styles.value}>
+                    {entry.text ?? measurement.full}
+                  </AppText>
+                </View>
+              );
+            })}
           </View>
-        ))}
+        ) : null}
       </ScrollView>
 
       <View style={styles.footer}>
-        <Button label="Refresh" onPress={load} variant="secondary" disabled={loading} />
+        <Button label="Read again" onPress={() => void load()} variant="secondary" busy={loading} icon="refresh" />
       </View>
     </Screen>
   );
 }
 
-const styles = StyleSheet.create({
-  header: { paddingTop: spacing.lg, paddingBottom: spacing.md, gap: 2 },
-  title: { fontFamily: fonts.display, fontSize: 30, fontWeight: '700', color: colors.readout },
-  subtitle: { fontFamily: fonts.mono, fontSize: 11, letterSpacing: 1, color: colors.dim },
-  body: { gap: spacing.xs, paddingBottom: spacing.lg },
-  status: { fontFamily: fonts.body, fontSize: 13, lineHeight: 19, color: colors.dim, paddingVertical: spacing.lg },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-    padding: spacing.md,
-    backgroundColor: colors.panel,
-    borderRadius: radius.sm,
-  },
-  name: { flex: 1, fontFamily: fonts.body, fontSize: 14, color: colors.readout },
-  value: {
-    fontFamily: fonts.mono,
-    fontSize: 14,
-    color: colors.amber,
-    fontVariant: ['tabular-nums'],
-  },
-  footer: { paddingVertical: spacing.md },
-});
+const createStyles = (t: Theme) =>
+  StyleSheet.create({
+    body: { gap: t.space.lg, paddingTop: t.space.lg, paddingBottom: t.space.lg },
+    intro: {},
+    status: { paddingVertical: t.space.lg },
+    list: {},
+    row: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: t.space.md,
+      paddingVertical: t.space.md,
+      borderBottomWidth: t.size.hairline,
+      borderBottomColor: t.color.rule,
+    },
+    name: { flex: 1 },
+    value: { fontSize: 15, color: t.color.ink },
+    footer: { paddingVertical: t.space.md },
+  });

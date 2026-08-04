@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 
 import { Button } from '@/components/button';
+import { Card } from '@/components/card';
 import { Screen } from '@/components/screen';
+import { Section } from '@/components/section';
+import { AppText } from '@/components/text';
 import { useObdConnection } from '@/features/connection/hooks/use-obd-connection';
 import {
   parseMonitorTests,
@@ -11,21 +15,17 @@ import {
   type MonitorTest,
   type ReadinessStatus,
 } from '@/lib/obd/monitors';
-import { colors, fonts, radius, spacing } from '@/theme';
-
-const STATE_COLOR: Record<MonitorState, string> = {
-  complete: colors.live,
-  incomplete: colors.amber,
-  unsupported: colors.dim,
-};
+import { useTheme, useThemedStyles, type Theme } from '@/theme';
 
 const STATE_LABEL: Record<MonitorState, string> = {
   complete: 'Ready',
-  incomplete: 'Not ready',
-  unsupported: 'N/A',
+  incomplete: 'Not run yet',
+  unsupported: 'Not fitted',
 };
 
 export function MonitorsScreen() {
+  const theme = useTheme();
+  const styles = useThemedStyles(createStyles);
   const { client } = useObdConnection();
   const [readiness, setReadiness] = useState<ReadinessStatus | null>(null);
   const [tests, setTests] = useState<MonitorTest[]>([]);
@@ -46,8 +46,7 @@ export function MonitorsScreen() {
     try {
       const results = await client.query('0600', 6000);
       if (results.ok) {
-        const parsed = parseMonitorTests(results.hex);
-        setTests(parsed);
+        setTests(parseMonitorTests(results.hex));
         setMode06Supported(true);
       } else {
         setTests([]);
@@ -65,125 +64,121 @@ export function MonitorsScreen() {
     void load();
   }, [load]);
 
+  const stateColor = (state: MonitorState) =>
+    state === 'complete' ? theme.color.ok : state === 'incomplete' ? theme.color.warn : theme.color.inkFaint;
+
+  const notReady = readiness?.monitors.filter((monitor) => monitor.state === 'incomplete').length ?? 0;
+
   return (
-    <Screen>
-      <View style={styles.header}>
-        <Text style={styles.title}>Monitors</Text>
-        <Text style={styles.subtitle}>Readiness and on-board tests</Text>
-      </View>
-
+    <Screen edges={{ top: false }}>
       <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
-        {readiness ? (
-          <>
-            <View style={[styles.mil, readiness.milOn && styles.milOn]}>
-              <Text style={[styles.milText, readiness.milOn && styles.milTextOn]}>
-                {readiness.milOn ? 'Check engine light ON' : 'Check engine light off'}
-              </Text>
-              <Text style={styles.milCount}>
-                {readiness.dtcCount} stored code{readiness.dtcCount === 1 ? '' : 's'} ·{' '}
-                {readiness.compressionIgnition ? 'compression ignition' : 'spark ignition'}
-              </Text>
-            </View>
+        <AppText variant="body" tone="muted">
+          The car runs its own emissions self-tests as you drive. An emissions test will not even
+          start until enough of them have finished, which is why clearing codes right before a test
+          is a bad idea.
+        </AppText>
 
-            <Text style={styles.sectionTitle}>Readiness</Text>
+        {readiness ? (
+          <Card spine={readiness.milOn ? theme.color.danger : theme.color.ok}>
+            <View style={styles.milHead}>
+              <MaterialCommunityIcons
+                name={readiness.milOn ? 'engine' : 'engine-outline'}
+                size={20}
+                color={readiness.milOn ? theme.color.danger : theme.color.ok}
+              />
+              <AppText variant="subheading" style={{ color: readiness.milOn ? theme.color.danger : theme.color.ok }}>
+                {readiness.milOn ? 'Check engine light is on' : 'Check engine light is off'}
+              </AppText>
+            </View>
+            <AppText variant="caption" tone="muted" style={styles.milMeta}>
+              {readiness.dtcCount} stored code{readiness.dtcCount === 1 ? '' : 's'} ·{' '}
+              {readiness.compressionIgnition ? 'Diesel' : 'Petrol'} ·{' '}
+              {notReady === 0 ? 'all tests complete' : `${notReady} test${notReady === 1 ? '' : 's'} still to run`}
+            </AppText>
+          </Card>
+        ) : (
+          <AppText variant="caption" tone="muted">
+            {loading ? 'Reading…' : 'This car did not report its readiness status.'}
+          </AppText>
+        )}
+
+        {readiness ? (
+          <Section
+            title="Readiness"
+            hint="Each of these has to finish before the car is ready for an emissions test."
+          >
             {readiness.monitors.map((monitor) => (
               <View key={monitor.name} style={styles.row}>
-                <Text style={styles.name}>{monitor.name}</Text>
-                <Text style={[styles.state, { color: STATE_COLOR[monitor.state] }]}>
+                <AppText variant="body" style={styles.name} numberOfLines={1}>
+                  {monitor.name}
+                </AppText>
+                <AppText variant="eyebrow" style={{ color: stateColor(monitor.state) }}>
                   {STATE_LABEL[monitor.state]}
-                </Text>
+                </AppText>
               </View>
             ))}
-          </>
-        ) : (
-          <Text style={styles.status}>{loading ? 'Reading…' : 'Readiness not reported.'}</Text>
-        )}
+          </Section>
+        ) : null}
 
-        <Text style={styles.sectionTitle}>On-board test results</Text>
-        {!mode06Supported ? (
-          <Text style={styles.status}>Mode 06 not supported by this vehicle.</Text>
-        ) : tests.length === 0 ? (
-          <Text style={styles.status}>{loading ? 'Reading…' : 'No test results reported.'}</Text>
-        ) : (
-          tests.map((test) => (
-            <View key={`${test.monitorId}-${test.testId}`} style={styles.testRow}>
-              <View style={styles.testText}>
-                <Text style={styles.name}>{test.monitorName}</Text>
-                <Text style={styles.testDetail}>
-                  {test.value.toFixed(2)} {test.unit} · limits {test.min.toFixed(2)}–{test.max.toFixed(2)}
-                  {test.scaled ? '' : ' (raw counts)'}
-                </Text>
+        <Section
+          title="On-board test results"
+          hint="The actual measurements behind those tests, with the limits the car judges them against."
+        >
+          {!mode06Supported ? (
+            <AppText variant="caption" tone="muted">
+              This car does not report detailed test results.
+            </AppText>
+          ) : tests.length === 0 ? (
+            <AppText variant="caption" tone="muted">
+              {loading ? 'Reading…' : 'No test results reported yet.'}
+            </AppText>
+          ) : (
+            tests.map((test) => (
+              <View key={`${test.monitorId}-${test.testId}`} style={styles.row}>
+                <View style={styles.testText}>
+                  <AppText variant="body" numberOfLines={1}>
+                    {test.monitorName}
+                  </AppText>
+                  <AppText variant="caption" tone="faint">
+                    {test.value.toFixed(2)} {test.unit} · allowed {test.min.toFixed(2)}–
+                    {test.max.toFixed(2)}
+                    {test.scaled ? '' : ' (raw counts)'}
+                  </AppText>
+                </View>
+                <AppText
+                  variant="eyebrow"
+                  style={{ color: test.passed ? theme.color.ok : theme.color.danger }}
+                >
+                  {test.passed ? 'Pass' : 'Fail'}
+                </AppText>
               </View>
-              <Text style={[styles.state, { color: test.passed ? colors.live : colors.redline }]}>
-                {test.passed ? 'Pass' : 'Fail'}
-              </Text>
-            </View>
-          ))
-        )}
+            ))
+          )}
+        </Section>
       </ScrollView>
 
       <View style={styles.footer}>
-        <Button label="Refresh" onPress={load} variant="secondary" disabled={loading} />
+        <Button label="Read again" onPress={() => void load()} variant="secondary" busy={loading} icon="refresh" />
       </View>
     </Screen>
   );
 }
 
-const styles = StyleSheet.create({
-  header: { paddingTop: spacing.lg, paddingBottom: spacing.md, gap: 2 },
-  title: { fontFamily: fonts.display, fontSize: 30, fontWeight: '700', color: colors.readout },
-  subtitle: { fontFamily: fonts.mono, fontSize: 11, letterSpacing: 1, color: colors.dim },
-  body: { gap: spacing.xs, paddingBottom: spacing.lg },
-  mil: {
-    padding: spacing.md,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.hairline,
-    backgroundColor: colors.panel,
-    gap: 2,
-    marginBottom: spacing.md,
-  },
-  milOn: { borderColor: colors.redline },
-  milText: { fontFamily: fonts.body, fontSize: 15, color: colors.readout },
-  milTextOn: { color: colors.redline },
-  milCount: { fontFamily: fonts.mono, fontSize: 11, color: colors.dim },
-  sectionTitle: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    letterSpacing: 2,
-    textTransform: 'uppercase',
-    color: colors.amber,
-    marginTop: spacing.lg,
-    marginBottom: spacing.xs,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    backgroundColor: colors.panel,
-    borderRadius: radius.sm,
-  },
-  testRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-    padding: spacing.md,
-    backgroundColor: colors.panel,
-    borderRadius: radius.sm,
-  },
-  testText: { flex: 1, gap: 2 },
-  testDetail: { fontFamily: fonts.mono, fontSize: 10, color: colors.dim },
-  name: { flex: 1, fontFamily: fonts.body, fontSize: 14, color: colors.readout },
-  state: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-  },
-  status: { fontFamily: fonts.body, fontSize: 13, lineHeight: 19, color: colors.dim, paddingVertical: spacing.sm },
-  footer: { paddingVertical: spacing.md },
-});
+const createStyles = (t: Theme) =>
+  StyleSheet.create({
+    body: { gap: t.space.xl, paddingTop: t.space.lg, paddingBottom: t.space.lg },
+    milHead: { flexDirection: 'row', alignItems: 'center', gap: t.space.sm },
+    milMeta: { marginTop: t.space.sm },
+    row: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: t.space.md,
+      paddingVertical: t.space.md,
+      borderBottomWidth: t.size.hairline,
+      borderBottomColor: t.color.rule,
+    },
+    name: { flex: 1 },
+    testText: { flex: 1, gap: 1 },
+    footer: { paddingVertical: t.space.md },
+  });

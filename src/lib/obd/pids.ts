@@ -1,8 +1,12 @@
+import { PID_GROUPS, type PidGroup } from './pid-groups';
+import { PID_QUANTITY_OVERRIDE, UNIT_TO_QUANTITY, type Quantity } from '@/lib/units/quantities';
+
 export type PidDefinition = {
   pid: string;
   name: string;
   /** Compact label for gauges and tight rows. */
   short: string;
+  /** The canonical unit the ECU reports in; display units convert from it. */
   unit: string;
   bytes: number;
   decode: (b: number[]) => number | null;
@@ -10,7 +14,18 @@ export type PidDefinition = {
   max: number;
   /** Set on enumerated PIDs whose numeric value is meaningless on its own. */
   describe?: (b: number[]) => string | null;
+  /**
+   * Filled in by normalisation below rather than written onto each literal —
+   * see the note above PID_DEFINITIONS.
+   */
+  quantity: Quantity;
+  group: PidGroup;
+  /** Pins display precision where the magnitude heuristic gets it wrong. */
+  decimals?: number;
 };
+
+/** Definitions as authored: everything except the derived fields. */
+type RawPidDefinition = Omit<PidDefinition, 'quantity' | 'group'>;
 
 const u16 = (b: number[]) => b[0] * 256 + b[1];
 /** Two's-complement 16-bit, used by the pressure and timing PIDs. */
@@ -72,7 +87,7 @@ const FUEL_SYSTEM: Record<number, string> = {
 };
 
 /** Standard Mode 01 PIDs. Formulas follow SAE J1979. */
-export const PID_DEFINITIONS: PidDefinition[] = [
+const RAW_PID_DEFINITIONS: RawPidDefinition[] = [
   { pid: '03', name: 'Fuel system status', short: 'Fuel sys', unit: '', bytes: 2, decode: (b) => b[0], min: 0, max: 16,
     describe: (b) => FUEL_SYSTEM[b[0]] ?? `Unknown (${b[0]})` },
   { pid: '04', name: 'Calculated engine load', short: 'Load', unit: '%', bytes: 1, decode: percent, min: 0, max: 100 },
@@ -146,17 +161,21 @@ export const PID_DEFINITIONS: PidDefinition[] = [
   { pid: '63', name: 'Engine reference torque', short: 'Ref trq', unit: 'N·m', bytes: 2, decode: u16, min: 0, max: 65535 },
 ];
 
+/**
+ * Quantity and group are derived, not authored.
+ *
+ * Every definition already carries its canonical unit, and the sixty-six PIDs
+ * use only fifteen distinct unit strings, so tagging them by hand would be
+ * sixty-six chances to introduce a typo for no added information.
+ */
+export const PID_DEFINITIONS: PidDefinition[] = RAW_PID_DEFINITIONS.map((definition) => ({
+  ...definition,
+  quantity: PID_QUANTITY_OVERRIDE[definition.pid] ?? UNIT_TO_QUANTITY[definition.unit] ?? 'none',
+  group: PID_GROUPS[definition.pid] ?? 'other',
+}));
+
 const BY_PID = new Map(PID_DEFINITIONS.map((definition) => [definition.pid, definition]));
 
 export function getPidDefinition(pid: string): PidDefinition | undefined {
   return BY_PID.get(pid.toUpperCase());
-}
-
-/** Rounds to a sensible number of decimals for the magnitude involved. */
-export function formatPidValue(definition: PidDefinition, value: number): string {
-  const abs = Math.abs(value);
-  if (Number.isInteger(value)) return String(value);
-  if (abs >= 100) return value.toFixed(0);
-  if (abs >= 10) return value.toFixed(1);
-  return value.toFixed(2);
 }
