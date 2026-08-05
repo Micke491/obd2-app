@@ -5,8 +5,11 @@
 import { AUTHORED, AUTHORED_CODES } from '../src/lib/obd/dtc/authored';
 import { DTC_CATALOG } from '../src/lib/obd/dtc/catalog';
 import { isValidCode } from '../src/lib/obd/dtc/derive/parse';
+import { parseDtcList } from '../src/lib/obd/dtc/parser';
 import { resolveDtcDetail } from '../src/lib/obd/dtc/resolve';
 import { PID_DEFINITIONS } from '../src/lib/obd/pids';
+import { extractPayload, markerOffset, parseResponse } from '../src/lib/obd/protocol';
+import { acceptsReply } from '../src/lib/obd/reply-match';
 import {
   UNITS,
   UNIT_PRESETS,
@@ -188,6 +191,114 @@ if (resolveDtcDetail('P0301').confidence !== 'catalog') fail('P0301 should resol
 // A nonsense string must not throw.
 const junk = resolveDtcDetail('hello');
 if (junk.title !== 'Not a trouble code') fail(`junk input gave "${junk.title}"`);
+
+// ── 8. Each control unit's reply is read on its own ──────────────────────────
+section('Trouble codes are read per control unit');
+
+/** Runs the real pipeline: raw adapter text -> frames -> codes. */
+const codesFrom = (raw: string, responseMode: string): string => {
+  const response = parseResponse(raw);
+  if (!response.ok) return `!${response.reason}`;
+  return parseDtcList(response.frames, responseMode)
+    .map((dtc) => dtc.code)
+    .join(',');
+};
+
+const expectCodes = (label: string, raw: string, responseMode: string, expected: string) => {
+  const actual = codesFrom(raw, responseMode);
+  if (actual !== expected) fail(`${label}: got "${actual}", expected "${expected}"`);
+};
+
+// A single unit reporting nothing has always worked; the rest used to invent
+// faults on a car whose warning light is off.
+expectCodes('one unit, no codes', '43 00 \r\r', '43', '');
+expectCodes('two units, no codes', '4300\r4300\r\r', '43', '');
+expectCodes('three units, no codes', '4300\r4300\r4300\r\r', '43', '');
+expectCodes('two units, no codes, CAN padding', '4300000000\r4300000000\r\r', '43', '');
+expectCodes('pending, two units, none', '4700\r4700\r\r', '47', '');
+expectCodes('permanent, two units, none', '4A00\r4A00\r\r', '4A', '');
+
+expectCodes('one unit, one code', '43010301\r\r', '43', 'P0301');
+expectCodes('two units, only one faulted', '43010301\r4300\r\r', '43', 'P0301');
+expectCodes('two units, one code each', '43010301\r43010420\r\r', '43', 'P0301,P0420');
+expectCodes('the same code from two units', '43010301\r43010301\r\r', '43', 'P0301');
+
+// Formats that already worked and must keep working.
+expectCodes('ISO 9141, no count byte', '43 03 01 04 20 \r\r', '43', 'P0301,P0420');
+expectCodes(
+  'CAN multi-frame, four codes',
+  '008\r0:430401330171\r1:042005000000\r\r',
+  '43',
+  'P0133,P0171,P0420,P0500',
+);
+expectCodes('echo left on, separate line', '03\r4300\r\r', '43', '');
+expectCodes('echo left on, same line', '034300\r\r', '43', '');
+expectCodes('no codes at all', 'NO DATA\r\r', '43', '!No data');
+expectCodes('the car refuses the service', '7F0311\r\r', '43', '!The car does not support this service');
+
+// Frames must actually be kept apart, not merely produce the right codes.
+const twoUnits = parseResponse('4300\r4300\r\r');
+if (!twoUnits.ok || twoUnits.frames.length !== 2) {
+  fail(`two units should give two frames, got ${twoUnits.ok ? twoUnits.frames.length : 'an error'}`);
+}
+const multiFrame = parseResponse('008\r0:430401330171\r1:042005000000\r\r');
+if (!multiFrame.ok || multiFrame.frames.length !== 1) {
+  fail(`one unit's multi-frame answer should stay one frame, got ${multiFrame.ok ? multiFrame.frames.length : 'an error'}`);
+}
+
+// ── 9. Markers are found at byte boundaries only ─────────────────────────────
+section('Payload markers are byte-aligned');
+if (markerOffset('4300', '43') !== 0) fail('marker at the start was not found');
+if (markerOffset('1430', '43') !== -1) fail('a marker straddling two bytes was accepted');
+if (markerOffset('143043', '43') !== 4) fail('the aligned marker after a straddling one was missed');
+if (extractPayload('1430', '43') !== null) fail('extractPayload accepted a mid-byte marker');
+if (extractPayload('410C1AF8', '41', '0C')?.join(',') !== '26,248') {
+  fail('extractPayload no longer reads an ordinary mode 01 reply');
+}
+
+// ── 10. A reply must answer the command that is waiting ──────────────────────
+section('Replies are matched to their command');
+
+const expectMatch = (cmd: string, raw: string, expected: boolean) => {
+  if (acceptsReply(cmd, raw) !== expected) {
+    fail(`acceptsReply(${JSON.stringify(cmd)}, ${JSON.stringify(raw)}) should be ${expected}`);
+  }
+};
+
+// The stray messages that used to shift every later reply one command behind.
+expectMatch('010C', '', false);
+expectMatch('010C', '\r\r', false);
+expectMatch('010C', '410B62', false);
+expectMatch('0101', '4100BE3EA813', false);
+
+expectMatch('010C', '410C1AF8', true);
+expectMatch('010C', '010C\r410C1AF8', true);
+expectMatch('010C', 'NO DATA', true);
+expectMatch('010C', '?', true);
+expectMatch('010C', 'SEARCHING...\r410C1AF8', true);
+expectMatch('010C', '7F0112', true);
+// A refusal naming a different service is answering a different command.
+expectMatch('010C', '7F0312', false);
+expectMatch('0101', '41010007E5E5', true);
+expectMatch('010C', '410C1AF8\r410C1AF8', true);
+
+expectMatch('03', '4300', true);
+expectMatch('03', '43010301', true);
+expectMatch('03', 'NO DATA', true);
+expectMatch('03', '410C1AF8', false);
+// PID 0x43 is absolute load. Its reply contains `43` at a byte boundary, and
+// reading that as a stored-code list is exactly how a phantom fault appears.
+expectMatch('03', '414300', false);
+expectMatch('07', '4300', false);
+
+expectMatch('0902', '014\r0:490201314434\r1:47503030523535', true);
+expectMatch('04', 'OK', true);
+expectMatch('04', '44', true);
+
+expectMatch('ATE0', 'OK', true);
+expectMatch('ATZ', 'ELM327 v1.5', true);
+expectMatch('ATE0', '', false);
+expectMatch('ATDPN', 'A6', true);
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');

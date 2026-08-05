@@ -16,7 +16,7 @@ import { SEVERITY_LABELS, resolveDtcDetail, type DtcDetail, type DtcSeverity } f
 import { useTheme, useThemedStyles, type Theme } from '@/theme';
 
 import { DRIVE_ICON, driveTint, severityTint } from '../components/severity';
-import { useTroubleCodes, type DtcGroup } from '../hooks/use-trouble-codes';
+import { useTroubleCodes, type DtcGroup, type ReportedFaults } from '../hooks/use-trouble-codes';
 
 const GROUPS: { key: DtcGroup; title: string; hint: string }[] = [
   { key: 'stored', title: 'Confirmed', hint: 'Faults the car is sure about — these turned the light on.' },
@@ -34,12 +34,39 @@ const SEVERITY_RANK: Record<DtcSeverity, number> = {
 
 const bySeverity = (a: DtcDetail, b: DtcDetail) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
 
+/**
+ * What the engine computer says about itself, shown next to what was read out
+ * of it. The two are worth stating together: a list of faults on a car whose
+ * warning light is off is the first thing a driver disbelieves, and being able
+ * to see both makes it checkable rather than a matter of trust.
+ */
+function reportedSummary(reported: ReportedFaults, stored: number): string {
+  const light = reported.milOn
+    ? 'The check engine light is on'
+    : 'The check engine light is off';
+
+  const tally =
+    reported.count === 0
+      ? 'the engine computer has no faults stored'
+      : `the engine computer has ${reported.count} fault${reported.count === 1 ? '' : 's'} stored`;
+
+  // Other control units keep their own faults, and the engine computer does not
+  // count those — so a difference here is ordinary, not a contradiction.
+  const note =
+    reported.count === stored
+      ? ''
+      : ' Other control units keep their own faults, which this count leaves out.';
+
+  return `${light} and ${tally}.${note}`;
+}
+
 export function CodesScreen() {
   const router = useRouter();
   const theme = useTheme();
   const styles = useThemedStyles(createStyles);
   const { client } = useObdConnection();
-  const { codes, loading, error, unsupported, refresh, clearCodes } = useTroubleCodes(client);
+  const { codes, loading, error, unsupported, reported, refresh, clearCodes } =
+    useTroubleCodes(client);
 
   const resolved = useMemo(() => {
     const out: Record<DtcGroup, DtcDetail[]> = { stored: [], pending: [], permanent: [] };
@@ -91,6 +118,12 @@ export function CodesScreen() {
               {error}
             </AppText>
           </Card>
+        ) : null}
+
+        {!loading && reported ? (
+          <AppText variant="caption" tone="muted">
+            {reportedSummary(reported, resolved.stored.length)}
+          </AppText>
         ) : null}
 
         {worst ? (

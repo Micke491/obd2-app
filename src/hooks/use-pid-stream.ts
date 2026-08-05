@@ -27,6 +27,12 @@ export type PidStreamOptions = {
 
 const DEFAULT_IDLE_GAP_MS = 40;
 const DEFAULT_QUERY_TIMEOUT_MS = 2500;
+/**
+ * Pause after a read that failed outright. A link being repaired turns every
+ * query away the moment it is made, and without this the cycle would spin as
+ * fast as the processor allows for as long as the repair takes.
+ */
+const ERROR_BACKOFF_MS = 200;
 /** Samples land in a buffer and paint on this cadence, not one render each. */
 const FLUSH_MS = 200;
 
@@ -134,6 +140,11 @@ export function usePidStream(
             if (cancelled) return;
             bufferedError = error instanceof Error ? error.message : 'Read failed';
             dirty = true;
+
+            await new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, ERROR_BACKOFF_MS);
+            });
+            if (cancelled) return;
           }
         }
 

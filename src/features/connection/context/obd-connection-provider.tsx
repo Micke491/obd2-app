@@ -15,6 +15,13 @@ export type ObdConnectionValue = ObdConnectionState & {
 
 export const ObdConnectionContext = createContext<ObdConnectionValue | null>(null);
 
+/**
+ * Failed repairs before the link is called lost. One failure is common — the
+ * adapter is often still rebooting when the first attempt runs — so a second is
+ * what distinguishes a slow recovery from a dead one.
+ */
+const RECOVERY_ATTEMPTS = 2;
+
 const IDLE_STATE: ObdConnectionState = {
   status: 'idle',
   adapter: 'idle',
@@ -29,12 +36,60 @@ export function ObdConnectionProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<ObdConnectionState>(IDLE_STATE);
   const [client, setClient] = useState<Elm327Client | null>(null);
   const clientRef = useRef<Elm327Client | null>(null);
+  const repairRef = useRef<Promise<void> | null>(null);
 
   const teardown = useCallback(async () => {
     const current = clientRef.current;
     clientRef.current = null;
+    repairRef.current = null;
     setClient(null);
-    if (current) await current.disconnect();
+    if (current) {
+      current.onTrouble(null);
+      await current.disconnect();
+    }
+  }, []);
+
+  /**
+   * Puts a link that has stopped answering back together without involving the
+   * driver. A clone adapter resets when the engine cranks and comes back with
+   * its configuration lost; nothing about that heals on its own, and the old
+   * behaviour was a dashboard that kept showing the last numbers it had read as
+   * though they were current. Silent while it works, because the point is that
+   * the readings keep coming.
+   */
+  const repairLink = useCallback((broken: Elm327Client) => {
+    if (repairRef.current) return;
+
+    const run = (async () => {
+      for (let attempt = 1; attempt <= RECOVERY_ATTEMPTS; attempt += 1) {
+        if (clientRef.current !== broken) return;
+
+        try {
+          await broken.recover();
+          console.log('[OBD] link repaired');
+          return;
+        } catch (error) {
+          console.log(`[OBD] repair attempt ${attempt} failed:`, describeError(error));
+        }
+      }
+
+      if (clientRef.current !== broken) return;
+
+      clientRef.current = null;
+      setClient(null);
+      setState({
+        ...IDLE_STATE,
+        status: 'error',
+        error:
+          'Lost contact with the adapter. Check it is seated firmly in the OBD port, then connect again.',
+      });
+      void broken.disconnect();
+    })();
+
+    repairRef.current = run;
+    void run.finally(() => {
+      if (repairRef.current === run) repairRef.current = null;
+    });
   }, []);
 
   const connect = useCallback(async (preferredAddress?: string | null): Promise<boolean> => {
@@ -99,10 +154,12 @@ export function ObdConnectionProvider({ children }: { children: ReactNode }) {
 
     const supportedPids = await opened.discoverSupportedPids();
 
+    opened.onTrouble(() => repairLink(opened));
+
     setClient(opened);
     setState((prev) => ({ ...prev, status: 'connected', progress: null, supportedPids }));
     return true;
-  }, [teardown]);
+  }, [teardown, repairLink]);
 
   const disconnect = useCallback(async () => {
     await teardown();
