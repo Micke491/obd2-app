@@ -11,7 +11,6 @@ import { NavRow } from '@/components/rows';
 import { Screen } from '@/components/screen';
 import { ScreenHeader } from '@/components/screen-header';
 import { AppText } from '@/components/text';
-import { useObdConnection } from '@/features/connection/hooks/use-obd-connection';
 import { SEVERITY_LABELS, resolveDtcDetail, type DtcDetail, type DtcSeverity } from '@/lib/obd/dtc';
 import { useTheme, useThemedStyles, type Theme } from '@/theme';
 
@@ -64,9 +63,9 @@ export function CodesScreen() {
   const router = useRouter();
   const theme = useTheme();
   const styles = useThemedStyles(createStyles);
-  const { client } = useObdConnection();
-  const { codes, loading, error, unsupported, reported, refresh, clearCodes } =
-    useTroubleCodes(client);
+  const { codes, state, busy, error, unsupported, reported, total, read, clear } = useTroubleCodes();
+
+  const hasRead = state === 'read';
 
   const resolved = useMemo(() => {
     const out: Record<DtcGroup, DtcDetail[]> = { stored: [], pending: [], permanent: [] };
@@ -77,7 +76,6 @@ export function CodesScreen() {
     return out;
   }, [codes]);
 
-  const total = resolved.stored.length + resolved.pending.length + resolved.permanent.length;
   const worst = useMemo(
     () => [...resolved.stored, ...resolved.pending, ...resolved.permanent].sort(bySeverity)[0] ?? null,
     [resolved],
@@ -92,7 +90,7 @@ export function CodesScreen() {
         'Nothing is repaired by doing this. If the fault is still there, the code comes back.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Clear codes', style: 'destructive', onPress: () => void clearCodes() },
+        { text: 'Clear codes', style: 'destructive', onPress: () => void clear() },
       ],
     );
   };
@@ -103,11 +101,15 @@ export function CodesScreen() {
         eyebrow="Diagnostics"
         title="Trouble codes"
         status={
-          loading
+          busy
             ? 'Reading the car…'
-            : total === 0
-              ? 'Nothing stored'
-              : `${total} code${total === 1 ? '' : 's'} found`
+            : state === 'idle'
+              ? 'Not read yet'
+              : state === 'cleared'
+                ? 'Codes cleared'
+                : total === 0
+                  ? 'Nothing stored'
+                  : `${total} code${total === 1 ? '' : 's'} found`
         }
       />
 
@@ -120,13 +122,39 @@ export function CodesScreen() {
           </Card>
         ) : null}
 
-        {!loading && reported ? (
+        {!hasRead && busy ? (
+          <EmptyState
+            icon="card-search-outline"
+            title="Reading the car…"
+            body="Asking for confirmed, pending and permanent faults, one list at a time."
+          />
+        ) : null}
+
+        {state === 'idle' && !busy ? (
+          <EmptyState
+            icon="card-search-outline"
+            title="Not read yet"
+            body="Nothing is asked of the car until you say so. A read takes a few seconds and covers confirmed, pending and permanent faults."
+            action={{ label: 'Read codes', onPress: () => void read() }}
+          />
+        ) : null}
+
+        {state === 'cleared' && !busy ? (
+          <EmptyState
+            icon="broom"
+            title="Codes cleared"
+            body="The confirmed and pending codes were erased and the warning light should be off. Nothing was repaired — drive the car, then read again to see whether the fault comes back."
+            action={{ label: 'Read codes', onPress: () => void read() }}
+          />
+        ) : null}
+
+        {hasRead && reported ? (
           <AppText variant="caption" tone="muted">
             {reportedSummary(reported, resolved.stored.length)}
           </AppText>
         ) : null}
 
-        {worst ? (
+        {hasRead && worst ? (
           <Card spine={driveTint(worst.drive, theme)}>
             <View style={styles.summaryHead}>
               <MaterialCommunityIcons
@@ -144,7 +172,7 @@ export function CodesScreen() {
           </Card>
         ) : null}
 
-        {!loading && total === 0 && unsupported.length < GROUPS.length ? (
+        {hasRead && total === 0 && unsupported.length < GROUPS.length ? (
           <EmptyState
             icon="check-decagram-outline"
             tone="good"
@@ -154,6 +182,7 @@ export function CodesScreen() {
         ) : null}
 
         {GROUPS.map((group) => {
+          if (!hasRead) return null;
           const list = resolved[group.key];
           const isUnsupported = unsupported.includes(group.key);
           if (list.length === 0 && !isUnsupported) return null;
@@ -204,21 +233,23 @@ export function CodesScreen() {
       <View style={styles.footer}>
         <View style={styles.footerButton}>
           <Button
-            label="Read again"
-            onPress={() => void refresh()}
-            variant="secondary"
-            busy={loading}
-            icon="refresh"
+            label={hasRead ? 'Read again' : 'Read codes'}
+            onPress={() => void read()}
+            variant={hasRead ? 'secondary' : 'primary'}
+            busy={busy}
+            icon={hasRead ? 'refresh' : 'card-search-outline'}
           />
         </View>
-        <View style={styles.footerButton}>
-          <Button
-            label="Clear codes"
-            onPress={confirmClear}
-            variant="danger"
-            disabled={loading || total === 0}
-          />
-        </View>
+        {hasRead ? (
+          <View style={styles.footerButton}>
+            <Button
+              label="Clear codes"
+              onPress={confirmClear}
+              variant="danger"
+              disabled={busy || total === 0}
+            />
+          </View>
+        ) : null}
       </View>
     </Screen>
   );

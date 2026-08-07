@@ -7,7 +7,7 @@ import { Screen } from '@/components/screen';
 import { AppText } from '@/components/text';
 import { useObdConnection } from '@/features/connection/hooks/use-obd-connection';
 import { useSettings } from '@/features/settings/context/settings-provider';
-import { useCodeCount } from '@/features/dtc/hooks/use-code-count';
+import { useTroubleCodes } from '@/features/dtc/hooks/use-trouble-codes';
 import { useKeepAwakeWhen } from '@/hooks/use-keep-awake-when';
 import { useTheme, useThemedStyles, type Theme } from '@/theme';
 
@@ -18,9 +18,11 @@ export function HubScreen() {
   const router = useRouter();
   const theme = useTheme();
   const styles = useThemedStyles(createStyles);
-  const { client, status, supportedPids, device } = useObdConnection();
+  const { status, supportedPids, device } = useObdConnection();
   const { settings, update } = useSettings();
-  const codes = useCodeCount(client);
+  // Only ever reflects a read the driver asked for — the hub never polls the
+  // car for faults on its own, and a clear puts this back to knowing nothing.
+  const { state: codesState, total: codeTotal, reported } = useTroubleCodes();
 
   useKeepAwakeWhen(settings.keepAwake);
 
@@ -66,13 +68,12 @@ export function HubScreen() {
         hint: 'What the check engine light is actually telling you',
         onPress: () => router.push('/codes'),
         disabled: !connected,
-        badge: connected
-          ? codes.count > 0
-            ? { text: `${codes.count}`, tone: 'danger' }
-            : codes.known
-              ? { text: 'Clear', tone: 'ok' }
-              : null
-          : null,
+        badge:
+          connected && codesState === 'read'
+            ? codeTotal > 0
+              ? { text: `${codeTotal}`, tone: 'danger' }
+              : { text: 'None', tone: 'ok' }
+            : null,
       },
       {
         icon: 'camera-timer',
@@ -92,8 +93,8 @@ export function HubScreen() {
       },
     ],
     [
-      codes.count,
-      codes.known,
+      codeTotal,
+      codesState,
       connected,
       router,
       settings.pinnedPids.length,
@@ -131,14 +132,19 @@ export function HubScreen() {
               />
             ) : null}
           </View>
-          <AppText variant="caption" tone={connected && codes.milOn ? 'danger' : 'muted'}>
+          <AppText
+            variant="caption"
+            tone={connected && codesState === 'read' && reported?.milOn ? 'danger' : 'muted'}
+          >
             {!connected
               ? 'Nothing plugged in yet — connect below to begin.'
-              : codes.milOn
-                ? `Check engine light is on · ${codes.count} stored code${codes.count === 1 ? '' : 's'}`
-                : codes.known
-                  ? 'No faults reported. Tap for vehicle details.'
-                  : 'Connected and reading. Tap for vehicle details.'}
+              : codesState !== 'read'
+                ? 'Connected. Tap for vehicle details.'
+                : reported?.milOn
+                  ? `Check engine light is on · ${reported.count} stored code${reported.count === 1 ? '' : 's'}`
+                  : codeTotal > 0
+                    ? `${codeTotal} trouble code${codeTotal === 1 ? '' : 's'} read. Tap for vehicle details.`
+                    : 'No faults reported. Tap for vehicle details.'}
           </AppText>
         </Pressable>
 

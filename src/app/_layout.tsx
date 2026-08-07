@@ -6,6 +6,7 @@ import { useEffect } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { ObdConnectionProvider } from '@/features/connection/context/obd-connection-provider';
+import { TroubleCodesProvider } from '@/features/dtc/context/trouble-codes-provider';
 import { SettingsProvider, useSettings } from '@/features/settings/context/settings-provider';
 import { AppThemeProvider, FONT_ASSETS, useTheme } from '@/theme';
 
@@ -42,8 +43,12 @@ function AppShell({ fontsReady }: { fontsReady: boolean }) {
   return (
     <AppThemeProvider mode={settings.themeMode}>
       <ObdConnectionProvider>
-        <ThemedStatusBar />
-        <AppStack />
+        {/* Above the router so the hub and the codes screen share one answer
+            to "has this car actually been asked about its faults yet?". */}
+        <TroubleCodesProvider>
+          <ThemedStatusBar />
+          <AppStack />
+        </TroubleCodesProvider>
       </ObdConnectionProvider>
     </AppThemeProvider>
   );
