@@ -34,6 +34,17 @@ export function isAtCommand(cmd: string): boolean {
   return normalizeCommand(cmd).startsWith('AT');
 }
 
+export type LinkReplyHealth = 'healthy' | 'failure' | 'neutral';
+
+export function linkReplyHealth(cmd: string, raw: string): LinkReplyHealth {
+  if (isAtCommand(cmd)) return 'neutral';
+
+  const failure = matchedErrorPhrase(normalizeReply(raw));
+  if (!failure) return 'healthy';
+
+  return failure !== 'No data' || normalizeCommand(cmd).startsWith('01') ? 'failure' : 'neutral';
+}
+
 /**
  * The hex a positive answer to `cmd` has to open with, or null when the command
  * is not an OBD request. Mode 01 PID 0C expects `410C`; mode 03 expects only

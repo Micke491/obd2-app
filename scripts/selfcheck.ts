@@ -9,7 +9,7 @@ import { parseDtcList } from '../src/lib/obd/dtc/parser';
 import { resolveDtcDetail } from '../src/lib/obd/dtc/resolve';
 import { PID_DEFINITIONS } from '../src/lib/obd/pids';
 import { extractPayload, markerOffset, parseResponse } from '../src/lib/obd/protocol';
-import { acceptsReply } from '../src/lib/obd/reply-match';
+import { acceptsReply, linkReplyHealth, type LinkReplyHealth } from '../src/lib/obd/reply-match';
 import {
   UNITS,
   UNIT_PRESETS,
@@ -299,6 +299,24 @@ expectMatch('ATE0', 'OK', true);
 expectMatch('ATZ', 'ELM327 v1.5', true);
 expectMatch('ATE0', '', false);
 expectMatch('ATDPN', 'A6', true);
+
+section('Adapter failures trigger link recovery');
+
+const expectLinkHealth = (cmd: string, raw: string, expected: LinkReplyHealth) => {
+  if (linkReplyHealth(cmd, raw) !== expected) {
+    fail(`linkReplyHealth(${JSON.stringify(cmd)}, ${JSON.stringify(raw)}) should be ${expected}`);
+  }
+};
+
+expectLinkHealth('010C', 'NO DATA', 'failure');
+expectLinkHealth('020C00', 'NO DATA', 'neutral');
+expectLinkHealth('03', 'NO DATA', 'neutral');
+expectLinkHealth('010D', 'CAN ERROR', 'failure');
+expectLinkHealth('0105', 'STOPPED', 'failure');
+expectLinkHealth('0104', 'LV RESET', 'failure');
+expectLinkHealth('010C', '410C1AF8', 'healthy');
+expectLinkHealth('010C', '7F0112', 'healthy');
+expectLinkHealth('ATZ', '?', 'neutral');
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');

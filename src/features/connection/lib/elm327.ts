@@ -4,7 +4,7 @@ import RNBluetoothClassic, {
 } from 'react-native-bluetooth-classic';
 
 import { markerOffset, parseResponse, responseModeFor, type ObdResponse } from '@/lib/obd/protocol';
-import { acceptsReply } from '@/lib/obd/reply-match';
+import { acceptsReply, linkReplyHealth } from '@/lib/obd/reply-match';
 import { SUPPORT_BLOCK_PIDS, chainsToNextBlock, decodeSupportMask } from '@/lib/obd/supported';
 import { extractPayload } from '@/lib/obd/protocol';
 
@@ -29,10 +29,9 @@ const LOG_PREFIX = '[ELM327]';
 const RESYNC_DELAY_MS = 300;
 
 /**
- * Consecutive unanswered commands before the link is treated as broken rather
- * than merely slow. A cheap adapter drops the occasional reply; several in a
- * row means it has stopped listening — usually after a brownout that also lost
- * its configuration, which only re-running the setup puts back.
+ * Consecutive failed commands before the link is treated as broken rather
+ * than merely slow. Several in a row means the vehicle session was lost —
+ * usually after a brownout that also erased the adapter's configuration.
  */
 const TROUBLE_THRESHOLD = 4;
 
@@ -327,8 +326,13 @@ export class Elm327Client {
 
       this.pending = null;
       clearTimeout(entry.timer);
-      this.consecutiveFailures = 0;
-      this.troubleReported = false;
+      const health = linkReplyHealth(entry.cmd, data);
+      if (health === 'failure') {
+        this.noteFailure();
+      } else if (health === 'healthy') {
+        this.consecutiveFailures = 0;
+        this.troubleReported = false;
+      }
       entry.resolve(data);
     });
   }
