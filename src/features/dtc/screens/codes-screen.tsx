@@ -135,7 +135,6 @@ export function CodesScreen() {
             icon="card-search-outline"
             title="Not read yet"
             body="Nothing is asked of the car until you say so. A read takes a few seconds and covers confirmed, pending and permanent faults."
-            action={{ label: 'Read codes', onPress: () => void read() }}
           />
         ) : null}
 
@@ -144,7 +143,6 @@ export function CodesScreen() {
             icon="broom"
             title="Codes cleared"
             body="The confirmed and pending codes were erased and the warning light should be off. Nothing was repaired — drive the car, then read again to see whether the fault comes back."
-            action={{ label: 'Read codes', onPress: () => void read() }}
           />
         ) : null}
 
