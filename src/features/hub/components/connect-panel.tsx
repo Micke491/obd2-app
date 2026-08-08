@@ -20,7 +20,8 @@ import { LinkDot } from './link-dot';
 export function ConnectPanel() {
   const theme = useTheme();
   const styles = useThemedStyles(createStyles);
-  const { status, adapter, ecu, device, error, progress, connect, disconnect } = useObdConnection();
+  const { status, adapter, ecu, device, error, progress, protocol, connect, disconnect } =
+    useObdConnection();
   const { settings } = useSettings();
 
   const connecting = status === 'connecting';
@@ -53,6 +54,12 @@ export function ConnectPanel() {
           {device?.name ?? 'OBD-II adapter'}
         </AppText>
       </View>
+
+      {connected && protocol ? (
+        <AppText variant="caption" tone="muted" numberOfLines={1}>
+          {protocol}
+        </AppText>
+      ) : null}
 
       <View style={styles.links}>
         <LinkDot label="Adapter" state={adapter} />

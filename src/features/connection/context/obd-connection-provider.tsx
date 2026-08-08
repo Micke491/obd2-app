@@ -29,6 +29,8 @@ const IDLE_STATE: ObdConnectionState = {
   device: null,
   error: null,
   progress: null,
+  protocol: null,
+  log: [],
   supportedPids: [],
 };
 
@@ -80,6 +82,7 @@ export function ObdConnectionProvider({ children }: { children: ReactNode }) {
       setState({
         ...IDLE_STATE,
         status: 'error',
+        log: broken.connectionTrace,
         error:
           'Lost contact with the adapter. Check it is seated firmly in the OBD port, then connect again.',
       });
@@ -108,12 +111,18 @@ export function ObdConnectionProvider({ children }: { children: ReactNode }) {
     }
 
     let opened: Elm327Client;
+    // Held separately so the report survives a failure that leaves `opened`
+    // unassigned — the attempt that never got as far as a client is exactly the
+    // one worth being able to read afterwards.
+    let started: Elm327Client | null = null;
+
     try {
       setState((prev) => ({ ...prev, progress: 'Looking for adapter' }));
       const device = await findAdapter(preferredAddress);
 
       setState((prev) => ({ ...prev, device, progress: `Connecting to ${device.name}` }));
       opened = await Elm327Client.connect(device.address);
+      started = opened;
 
       clientRef.current = opened;
       await opened.initializeAdapter((progress) => {
@@ -125,6 +134,7 @@ export function ObdConnectionProvider({ children }: { children: ReactNode }) {
         ...IDLE_STATE,
         status: 'error',
         adapter: 'failed',
+        log: started?.connectionTrace ?? [],
         error:
           error instanceof NoAdapterError
             ? error.message
@@ -136,7 +146,9 @@ export function ObdConnectionProvider({ children }: { children: ReactNode }) {
     setState((prev) => ({ ...prev, adapter: 'ready', ecu: 'pending', progress: 'Contacting ECU' }));
 
     try {
-      await opened.connectEcu();
+      await opened.connectEcu((progress) => {
+        setState((prev) => ({ ...prev, progress }));
+      });
     } catch (error) {
       // The adapter is fine here, so it stays marked ready — only the vehicle
       // link failed, and that distinction is what tells you where to look.
@@ -146,6 +158,7 @@ export function ObdConnectionProvider({ children }: { children: ReactNode }) {
         ecu: 'failed',
         progress: null,
         error: describeError(error),
+        log: opened.connectionTrace,
       }));
       return false;
     }
@@ -157,7 +170,14 @@ export function ObdConnectionProvider({ children }: { children: ReactNode }) {
     opened.onTrouble(() => repairLink(opened));
 
     setClient(opened);
-    setState((prev) => ({ ...prev, status: 'connected', progress: null, supportedPids }));
+    setState((prev) => ({
+      ...prev,
+      status: 'connected',
+      progress: null,
+      protocol: opened.protocol,
+      log: opened.connectionTrace,
+      supportedPids,
+    }));
     return true;
   }, [teardown, repairLink]);
 

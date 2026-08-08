@@ -1,10 +1,11 @@
-import { Alert, ScrollView, StyleSheet } from 'react-native';
+import { Alert, ScrollView, StyleSheet, View } from 'react-native';
 
 import { Button } from '@/components/button';
 import { ChoiceRow, FieldRow, SwitchRow } from '@/components/rows';
 import { Screen } from '@/components/screen';
 import { Section } from '@/components/section';
 import { AppText } from '@/components/text';
+import { useObdConnection } from '@/features/connection/hooks/use-obd-connection';
 import { useThemedStyles, type Theme } from '@/theme';
 
 import { useSettings } from '../context/settings-provider';
@@ -20,6 +21,7 @@ const TIMEOUT_HINTS: Record<QueryTimeout, string> = {
 export function AdapterScreen() {
   const styles = useThemedStyles(createStyles);
   const { settings, update } = useSettings();
+  const { protocol, log } = useObdConnection();
 
   const forget = () => {
     Alert.alert(
@@ -89,6 +91,32 @@ export function AdapterScreen() {
           )}
         </Section>
 
+        <Section
+          title="Last connection"
+          hint="What the app and the adapter said to each other, most recent attempt. Worth reading when a car will not answer."
+        >
+          {protocol ? (
+            <FieldRow label="Protocol">
+              <AppText variant="bodyStrong">{protocol}</AppText>
+            </FieldRow>
+          ) : null}
+
+          {log.length > 0 ? (
+            <View style={styles.log}>
+              {log.map((line, index) => (
+                <AppText key={`${index}-${line}`} variant="mono" tone="muted" style={styles.logLine}>
+                  {line}
+                </AppText>
+              ))}
+            </View>
+          ) : (
+            <AppText variant="body" tone="muted">
+              Nothing recorded yet. Connect once and the steps taken to reach your car show up
+              here, including every protocol tried and what came back.
+            </AppText>
+          )}
+        </Section>
+
         <Section title="On launch">
           <SwitchRow
             label="Connect automatically"
@@ -105,4 +133,6 @@ export function AdapterScreen() {
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     body: { gap: t.space.xl, paddingTop: t.space.lg, paddingBottom: t.space.xxxl },
+    log: { gap: t.space.xs },
+    logLine: { fontSize: 11, lineHeight: 16 },
   });

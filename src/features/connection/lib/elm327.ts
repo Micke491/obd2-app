@@ -4,6 +4,7 @@ import RNBluetoothClassic, {
 } from 'react-native-bluetooth-classic';
 
 import { markerOffset, parseResponse, responseModeFor, type ObdResponse } from '@/lib/obd/protocol';
+import { PROTOCOL_NAMES, protocolIdFromReply } from '@/lib/obd/protocols';
 import { acceptsReply, linkReplyHealth } from '@/lib/obd/reply-match';
 import { SUPPORT_BLOCK_PIDS, chainsToNextBlock, decodeSupportMask } from '@/lib/obd/supported';
 import { extractPayload } from '@/lib/obd/protocol';
@@ -12,11 +13,15 @@ import {
   ADAPTER_INIT_SEQUENCE,
   COMMAND_TERMINATOR,
   ECU_HANDSHAKE,
-  ECU_HANDSHAKE_ATTEMPTS,
   ELM327_CONNECTION_OPTIONS,
   ELM327_INSECURE_OPTIONS,
+  PROTOCOL_QUERY,
   PROTOCOL_RESET,
+  PROTOCOL_SELECT_TIMEOUT_MS,
+  SILENT_PROBES_BEFORE_GIVING_UP,
+  type InitStep,
 } from './at-commands';
+import { buildHandshakePlan } from './handshake-plan';
 
 const LOG_PREFIX = '[ELM327]';
 
@@ -35,7 +40,22 @@ const RESYNC_DELAY_MS = 300;
  */
 const TROUBLE_THRESHOLD = 4;
 
+/**
+ * Lines kept from the connection attempt. Enough to hold a full protocol sweep,
+ * which is exactly the case where somebody needs to read it.
+ */
+const TRACE_LIMIT = 40;
+
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** What one `0100` told us. */
+type Probe = {
+  /** The vehicle answered. Nothing else matters when this is true. */
+  answered: boolean;
+  /** Nothing came back at all, as opposed to a reply that carried bad news. */
+  silent: boolean;
+  reason: string;
+};
 
 /** Keeps a stray adapter message readable in a log line or an error. */
 function summarize(data: string): string {
@@ -64,6 +84,8 @@ export class Elm327Client {
   private consecutiveFailures = 0;
   private troubleReported = false;
   private troubleHandler: (() => void) | null = null;
+  private protocolId: string | null = null;
+  private trace: string[] = [];
 
   private constructor(device: BluetoothDevice) {
     this.device = device;
@@ -75,6 +97,22 @@ export class Elm327Client {
 
   get name(): string {
     return this.device.name;
+  }
+
+  /** The bus the car turned out to be on, once it has answered. */
+  get protocol(): string | null {
+    return this.protocolId ? (PROTOCOL_NAMES[this.protocolId] ?? null) : null;
+  }
+
+  /**
+   * What the last connection attempt did, step by step.
+   *
+   * A car that still will not answer is otherwise a single sentence with
+   * nothing behind it; this is the difference between "it does not work" and
+   * knowing which protocols were tried and what the adapter said to each.
+   */
+  get connectionTrace(): string[] {
+    return [...this.trace];
   }
 
   static async connect(address: string): Promise<Elm327Client> {
@@ -92,6 +130,7 @@ export class Elm327Client {
 
   /** Configures the adapter. Individual steps are allowed to fail. */
   async initializeAdapter(onProgress?: (label: string) => void): Promise<void> {
+    this.trace = [];
     await this.device.clear().catch(() => undefined);
     this.attachReader();
     await this.runInitSequence(onProgress);
@@ -124,6 +163,7 @@ export class Elm327Client {
     this.consecutiveFailures = 0;
 
     try {
+      this.note('Link restarting', 'the adapter stopped answering');
       this.failPending(new Error('Restarting the link'));
 
       await delay(RESYNC_DELAY_MS);
@@ -139,35 +179,121 @@ export class Elm327Client {
     }
   }
 
-  /** Proves the vehicle answers. Rejects when it does not. */
-  async connectEcu(): Promise<void> {
-    let reason = 'The ECU did not answer.';
+  /**
+   * Proves the vehicle answers, and settles which bus it is on. Rejects when no
+   * protocol reaches it.
+   *
+   * Auto-detection gets first go and most cars never need anything else. What
+   * follows is the part that was missing: asking the adapter to speak each
+   * protocol by name. `ATSP0` is a single guess made by the cheapest chip in
+   * the chain, and when it guesses wrong — routinely, on the older non-CAN
+   * buses and on clone hardware — repeating it changes nothing. Naming the
+   * protocols is why a workshop tool connects to a car this app could not.
+   */
+  async connectEcu(onProgress?: (label: string) => void): Promise<void> {
+    // The last thing the adapter actually said, as opposed to the many probes
+    // that simply ran out of time. It is the only part of a failed attempt
+    // worth putting in front of a driver.
+    let heard: string | null = null;
+    let silent = 0;
+    let sweeping = false;
 
-    for (let attempt = 1; attempt <= ECU_HANDSHAKE_ATTEMPTS; attempt += 1) {
+    const known = this.protocolId;
+
+    for (const step of buildHandshakePlan(known)) {
       if (this.disposed) throw new Error('Not connected');
 
-      try {
-        const raw = await this.send(ECU_HANDSHAKE.cmd, ECU_HANDSHAKE.timeoutMs, true);
-        const response = parseResponse(raw);
+      if (step.abandonable) {
+        // Silence before the sweep meant only that auto-detection was still
+        // searching when the app stopped waiting, so the count starts here.
+        if (!sweeping) {
+          sweeping = true;
+          silent = 0;
+        }
 
-        if (response.ok && markerOffset(response.hex, '4100') !== -1) return;
-
-        reason = response.ok
-          ? 'The ECU did not answer a standard request.'
-          : `${response.reason}. Check the ignition is on.`;
-      } catch (error) {
-        reason = describeError(error);
+        if (silent >= SILENT_PROBES_BEFORE_GIVING_UP) {
+          throw new Error(
+            'The adapter stopped answering. Unplug it, plug it back in, then connect again.',
+          );
+        }
       }
 
-      if (attempt < ECU_HANDSHAKE_ATTEMPTS) {
-        // Auto-detection often gives up on its first pass and finds the
-        // protocol on the next, so re-arm it rather than declaring failure.
-        await this.send(PROTOCOL_RESET.cmd, PROTOCOL_RESET.timeoutMs, true).catch(() => undefined);
-        await delay(RESYNC_DELAY_MS);
+      if (step.select) {
+        try {
+          await this.send(`ATSP${step.select}`, PROTOCOL_SELECT_TIMEOUT_MS, true);
+        } catch (error) {
+          this.note(step.label, describeError(error));
+          silent += 1;
+          continue;
+        }
+      }
+
+      onProgress?.(step.label);
+      const probe = await this.probeEcu(step.label, step.timeoutMs);
+
+      if (probe.answered) {
+        // An adapter too old to answer `ATDPN` leaves the protocol unnamed, so
+        // fall back to the one this step forced, then to the one already known.
+        this.protocolId = this.protocolId ?? step.select ?? known;
+        return;
+      }
+
+      if (probe.silent) {
+        silent += 1;
+      } else {
+        silent = 0;
+        heard = probe.reason;
       }
     }
 
-    throw new Error(reason);
+    // Leave auto-detection armed rather than whichever bus was tried last, so
+    // the next attempt starts from a clean search.
+    this.protocolId = null;
+    await this.send(PROTOCOL_RESET.cmd, PROTOCOL_RESET.timeoutMs, true).catch(() => undefined);
+
+    throw new Error(
+      heard
+        ? `The car never answered, on any protocol (last: ${heard}). Check the ignition is on and the adapter is pushed fully into the port.`
+        : 'The car never answered, on any protocol. Check the ignition is on and the adapter is pushed fully into the port.',
+    );
+  }
+
+  /** One `0100`, and what to make of the answer. */
+  private async probeEcu(label: string, timeoutMs: number): Promise<Probe> {
+    try {
+      const raw = await this.send(ECU_HANDSHAKE.cmd, timeoutMs, true);
+      const response = parseResponse(raw);
+
+      if (response.ok && markerOffset(response.hex, '4100') !== -1) {
+        this.protocolId = await this.readProtocolId();
+        this.note(label, this.protocol ? `answered on ${this.protocol}` : 'answered');
+        return { answered: true, silent: false, reason: '' };
+      }
+
+      const reason = response.ok ? 'a reply carrying no readings' : response.reason;
+      this.note(label, reason);
+
+      return { answered: false, silent: false, reason };
+    } catch (error) {
+      const reason = describeError(error);
+      this.note(label, reason);
+
+      // The adapter may still be working through a protocol it was cut off
+      // mid-way; anything it eventually says belongs to nobody, so let it land
+      // while nothing is waiting for it.
+      await delay(RESYNC_DELAY_MS);
+
+      return { answered: false, silent: true, reason };
+    }
+  }
+
+  /** Which protocol the adapter ended up using, as an `ATSP` digit. */
+  private async readProtocolId(): Promise<string | null> {
+    try {
+      return protocolIdFromReply(await this.send(PROTOCOL_QUERY.cmd, PROTOCOL_QUERY.timeoutMs, true));
+    } catch {
+      return null;
+    }
   }
 
   /** Runs a command and parses the reply into a hex payload. */
@@ -262,14 +388,14 @@ export class Elm327Client {
   }
 
   private async runInitSequence(onProgress?: (label: string) => void): Promise<void> {
-    for (const step of ADAPTER_INIT_SEQUENCE) {
+    for (const step of [...ADAPTER_INIT_SEQUENCE, this.protocolStep()]) {
       if (this.disposed) throw new Error('Disconnected during initialization');
       onProgress?.(step.label);
 
       try {
         await this.send(step.cmd, step.timeoutMs, true);
       } catch (error) {
-        console.log(`${LOG_PREFIX} ${step.cmd} failed, continuing:`, describeError(error));
+        this.note(step.cmd, describeError(error));
       }
 
       if (step.settleMs) {
@@ -277,6 +403,33 @@ export class Elm327Client {
         await this.device.clear().catch(() => undefined);
       }
     }
+  }
+
+  /**
+   * How to arm the adapter before the first request.
+   *
+   * A protocol this car has already answered on is worth going straight back
+   * to. It saves the search on every reconnect, and after the adapter reboots
+   * mid-drive it is the difference between picking the readings back up and
+   * negotiating from nothing while the car is moving.
+   */
+  private protocolStep(): InitStep {
+    if (!this.protocolId) return PROTOCOL_RESET;
+
+    return {
+      cmd: `ATSP${this.protocolId}`,
+      label: `Selecting ${PROTOCOL_NAMES[this.protocolId] ?? 'protocol'}`,
+      timeoutMs: PROTOCOL_SELECT_TIMEOUT_MS,
+    };
+  }
+
+  /** Adds a line to the report of what this connection attempt did. */
+  private note(step: string, outcome: string): void {
+    const line = `${step}: ${outcome}`;
+    console.log(`${LOG_PREFIX} ${line}`);
+
+    this.trace.push(line);
+    if (this.trace.length > TRACE_LIMIT) this.trace.shift();
   }
 
   private failPending(reason: Error): void {

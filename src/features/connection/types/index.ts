@@ -14,6 +14,13 @@ export type ObdConnectionState = {
   device: BluetoothDevice | null;
   error: string | null;
   progress: string | null;
+  /** The bus the car turned out to be on, once it has answered. */
+  protocol: string | null;
+  /**
+   * What the last connection attempt did, step by step. A car that will not
+   * answer is otherwise a single sentence with nothing behind it.
+   */
+  log: string[];
   /** Mode 01 PIDs the ECU reports as implemented. */
   supportedPids: string[];
 };

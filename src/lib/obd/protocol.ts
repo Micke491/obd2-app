@@ -1,14 +1,34 @@
-/** Adapter-level failures. A response containing one of these carries no data. */
-const ERROR_PHRASES: Array<[RegExp, string]> = [
+/**
+ * Adapter-level failures. A response containing one of these carries no data.
+ *
+ * The list has to be complete, because anything missing from it is not merely
+ * unrecognised — `parseResponse` strips the non-hex characters out of whatever
+ * it does not recognise and reads the remainder as payload. `BUS INIT: ERROR`
+ * reduced to the byte `E`, `BUFFER FULL` to `BFFEF`. Both were then reported as
+ * successful answers from a healthy link, so a car that had told the app
+ * exactly what was wrong looked no different from one that never replied.
+ */
+const ERROR_PHRASES: Array<[RegExp, string | ((match: RegExpExecArray) => string)]> = [
   [/UNABLE\s*TO\s*CONNECT/, 'Adapter could not reach the ECU'],
+  // The K-line protocols announce their initialisation handshake and its
+  // outcome. `BUS INIT: OK` precedes real data; the error form is how an older
+  // non-CAN car reports that it never came up.
+  [/BUS\s*INIT[\s.:]*ERROR/, 'The car did not answer the adapter'],
   [/CAN\s*ERROR/, 'CAN bus error'],
   [/BUS\s*ERROR/, 'Bus error'],
+  [/(?:RX|TX)\s*ERROR/, 'Garbled reply'],
   [/DATA\s*ERROR/, 'Data error'],
   [/FB\s*ERROR/, 'Feedback error'],
   [/BUS\s*BUSY/, 'Bus busy'],
+  [/BUFFER\s*FULL/, 'Reply too long for the adapter'],
   [/LV\s*RESET/, 'Adapter browned out'],
+  [/LP\s*ALERT/, 'Adapter going to sleep'],
+  [/ACT\s*ALERT/, 'Adapter idle'],
   [/STOPPED/, 'Request stopped'],
   [/NO\s*DATA/, 'No data'],
+  // The adapter's own faults, reported as a two-digit code. No hex payload can
+  // contain the letter R, so this cannot swallow real data.
+  [/\bERR\d{2}\b/, (match) => `Adapter internal error ${match[0]}`],
   [/^\s*\?\s*$/, 'Adapter did not understand the command'],
 ];
 
@@ -53,7 +73,8 @@ export function normalizeReply(raw: string): string {
 /** The adapter-level failure a reply reports, or null when it carries data. */
 export function matchedErrorPhrase(text: string): string | null {
   for (const [pattern, reason] of ERROR_PHRASES) {
-    if (pattern.test(text)) return reason;
+    const match = pattern.exec(text);
+    if (match) return typeof reason === 'string' ? reason : reason(match);
   }
   return null;
 }

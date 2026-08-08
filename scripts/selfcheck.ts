@@ -2,12 +2,14 @@
  * Pure-logic checks that need no adapter, no car and no device.
  * Run with: npx tsx <this file>
  */
+import { buildHandshakePlan, worstCaseDuration } from '../src/features/connection/lib/handshake-plan';
 import { AUTHORED, AUTHORED_CODES } from '../src/lib/obd/dtc/authored';
 import { DTC_CATALOG } from '../src/lib/obd/dtc/catalog';
 import { isValidCode } from '../src/lib/obd/dtc/derive/parse';
 import { parseDtcList } from '../src/lib/obd/dtc/parser';
 import { resolveDtcDetail } from '../src/lib/obd/dtc/resolve';
 import { PID_DEFINITIONS } from '../src/lib/obd/pids';
+import { PROTOCOL_NAMES, PROTOCOL_SWEEP, describeProtocolReply } from '../src/lib/obd/protocols';
 import { extractPayload, markerOffset, parseResponse } from '../src/lib/obd/protocol';
 import { acceptsReply, linkReplyHealth, type LinkReplyHealth } from '../src/lib/obd/reply-match';
 import {
@@ -300,6 +302,44 @@ expectMatch('ATZ', 'ELM327 v1.5', true);
 expectMatch('ATE0', '', false);
 expectMatch('ATDPN', 'A6', true);
 
+// ── 11. Adapter status messages are never read as data ───────────────────────
+section('Adapter status messages are not mistaken for payload');
+
+const expectFailure = (raw: string, expected: string) => {
+  const response = parseResponse(raw);
+  if (response.ok) {
+    fail(`${JSON.stringify(raw)} decoded as payload "${response.hex}" instead of a failure`);
+  } else if (response.reason !== expected) {
+    fail(`${JSON.stringify(raw)}: reason "${response.reason}", expected "${expected}"`);
+  }
+};
+
+// A K-line car that fails its initialisation says so in words. Stripping the
+// non-hex characters out of those words used to leave `E`, which parsed as a
+// successful — and completely invented — payload.
+expectFailure('BUS INIT: ERROR\r\r', 'The car did not answer the adapter');
+expectFailure('BUS INIT: ...ERROR\r\r', 'The car did not answer the adapter');
+expectFailure('BUS INIT:ERROR\r\r', 'The car did not answer the adapter');
+expectFailure('BUFFER FULL\r\r', 'Reply too long for the adapter');
+expectFailure('ERR94\r\r', 'Adapter internal error ERR94');
+expectFailure('<RX ERROR\r\r', 'Garbled reply');
+expectFailure('LP ALERT\r\r', 'Adapter going to sleep');
+expectFailure('ACT ALERT\r\r', 'Adapter idle');
+
+// The successful form of the same K-line message still carries its payload.
+const busInitOk = parseResponse('BUS INIT: OK\r4100BE3EB811\r\r');
+if (!busInitOk.ok || busInitOk.hex !== '4100BE3EB811') {
+  fail(`a successful bus init should still decode: ${JSON.stringify(busInitOk)}`);
+}
+
+/** The status messages that used to be discarded rather than read as answers. */
+const ADAPTER_STATUS = ['BUS INIT: ERROR', 'BUFFER FULL', 'ERR94', '<RX ERROR', 'LP ALERT'];
+
+// Each one is an answer to the command that is waiting, not a stray message to
+// discard — being discarded is what made the app sit through its whole timeout
+// instead of reporting what the adapter had already told it.
+for (const raw of ADAPTER_STATUS) expectMatch('0100', raw, true);
+
 section('Adapter failures trigger link recovery');
 
 const expectLinkHealth = (cmd: string, raw: string, expected: LinkReplyHealth) => {
@@ -317,6 +357,96 @@ expectLinkHealth('0104', 'LV RESET', 'failure');
 expectLinkHealth('010C', '410C1AF8', 'healthy');
 expectLinkHealth('010C', '7F0112', 'healthy');
 expectLinkHealth('ATZ', '?', 'neutral');
+
+// A link that cannot initialise or has gone out of step is broken, not healthy.
+for (const raw of ADAPTER_STATUS) expectLinkHealth('0100', raw, 'failure');
+
+// ── 12. Protocols can be named one at a time ─────────────────────────────────
+section('Protocol sweep is well formed');
+
+const seen = new Set<string>();
+for (const protocol of PROTOCOL_SWEEP) {
+  if (!/^[1-9A-C]$/.test(protocol.id)) fail(`protocol "${protocol.id}" is not an ELM327 protocol`);
+  if (seen.has(protocol.id)) fail(`protocol ${protocol.id} is swept twice`);
+  seen.add(protocol.id);
+  if (protocol.name !== PROTOCOL_NAMES[protocol.id]) fail(`protocol ${protocol.id} has two names`);
+  if (protocol.probeTimeoutMs < 3000) fail(`protocol ${protocol.id} is given no time to initialise`);
+}
+
+// The 11-bit 500 kbps CAN bus fitted to nearly every car since 2008 is the one
+// worth trying first; the slow K-line protocols cost seconds each, so they come
+// after everything cheap has been ruled out.
+if (PROTOCOL_SWEEP[0].id !== '6') fail('the sweep should start with CAN 11-bit 500 kbps');
+const kLineAt = PROTOCOL_SWEEP.findIndex((protocol) => protocol.id === '3');
+const canAt = PROTOCOL_SWEEP.findIndex((protocol) => protocol.id === '9');
+if (kLineAt < canAt) fail('the slow K-line protocols are being tried before the CAN ones');
+
+// Every protocol an ELM327 can report has to have a name, or the connection
+// report ends up telling the driver their car speaks "protocol 9".
+for (const id of ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C']) {
+  if (!PROTOCOL_NAMES[id]) fail(`protocol ${id} has no name`);
+}
+
+const expectDescribed = (reply: string, expected: string | null) => {
+  const actual = describeProtocolReply(reply);
+  if (actual !== expected) fail(`describeProtocolReply(${JSON.stringify(reply)}) gave ${actual}`);
+};
+
+expectDescribed('6', 'CAN 11-bit, 500 kbps');
+expectDescribed('A6', 'CAN 11-bit, 500 kbps'); // found by auto-detection
+expectDescribed('A3\r\r', 'ISO 9141-2');
+expectDescribed('3', 'ISO 9141-2');
+expectDescribed('A0', null); // auto-detection still searching
+expectDescribed('?', null);
+expectDescribed('', null);
+
+// ── 13. The car is reached by a plan, not by one guess ───────────────────────
+section('Handshake plan');
+
+const cold = buildHandshakePlan(null);
+
+// Auto-detection gets the first two goes, and neither may be abandoned early:
+// an ELM327 asked to find the protocol itself is routinely still searching when
+// the first request times out, and that silence is progress, not a dead link.
+if (cold[0].select !== null || cold[1].select !== null) {
+  fail('the plan should open by using whatever protocol is already armed');
+}
+if (cold[0].abandonable || cold[1].abandonable) {
+  fail('a still-running protocol search must not be read as a dead adapter');
+}
+if (cold[0].timeoutMs <= 15000) {
+  fail(`auto-detection is given ${cold[0].timeoutMs}ms, too little to walk the slow protocols`);
+}
+
+// Then every bus by name. This is the whole point: one guess from the cheapest
+// chip in the chain is not a connection strategy.
+const swept = cold.filter((step) => step.select !== null).map((step) => step.select);
+if (swept.length !== PROTOCOL_SWEEP.length) {
+  fail(`the plan names ${swept.length} protocols, the sweep has ${PROTOCOL_SWEEP.length}`);
+}
+if (swept.join('') !== PROTOCOL_SWEEP.map((protocol) => protocol.id).join('')) {
+  fail(`the plan tries protocols in the wrong order: ${swept.join('')}`);
+}
+for (const step of cold.filter((entry) => entry.select !== null)) {
+  if (!step.abandonable) fail(`${step.label} would keep waiting on an adapter that has gone quiet`);
+  if (!step.label.includes(PROTOCOL_NAMES[step.select as string])) {
+    fail(`${step.label} does not say which protocol is being tried`);
+  }
+}
+
+// A car that has already answered goes straight back to the bus it answered on,
+// and does not get asked about it a third time further down the plan.
+const warm = buildHandshakePlan('3');
+if (!warm[0].label.includes('ISO 9141-2')) fail(`a known protocol should be named: ${warm[0].label}`);
+if (warm.some((step) => step.select === '3')) fail('the known protocol is swept as well as armed');
+if (warm.length !== cold.length - 1) fail('a known protocol should save exactly one step');
+
+// A failed attempt has to end. Somebody sitting in a car with the adapter in
+// their glovebox should get an answer inside a couple of minutes, not sit
+// through every timeout the protocol list can offer.
+const worst = worstCaseDuration(cold);
+if (worst > 120000) fail(`a hopeless connection would take ${Math.round(worst / 1000)}s to fail`);
+console.log(`  ${cold.length} steps, at most ${Math.round(worst / 1000)}s before giving up`);
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');
