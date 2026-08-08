@@ -2,6 +2,9 @@
  * Pure-logic checks that need no adapter, no car and no device.
  * Run with: npx tsx <this file>
  */
+import { looksLikeObdAdapter, rankAdapterCandidates } from '../src/features/connection/lib/adapter-ranking';
+import { ADAPTER_INIT_SEQUENCE } from '../src/features/connection/lib/at-commands';
+import { humanizeBluetoothError } from '../src/features/connection/lib/bluetooth-errors';
 import { buildHandshakePlan, worstCaseDuration } from '../src/features/connection/lib/handshake-plan';
 import { AUTHORED, AUTHORED_CODES } from '../src/lib/obd/dtc/authored';
 import { DTC_CATALOG } from '../src/lib/obd/dtc/catalog';
@@ -447,6 +450,66 @@ if (warm.length !== cold.length - 1) fail('a known protocol should save exactly 
 const worst = worstCaseDuration(cold);
 if (worst > 120000) fail(`a hopeless connection would take ${Math.round(worst / 1000)}s to fail`);
 console.log(`  ${cold.length} steps, at most ${Math.round(worst / 1000)}s before giving up`);
+
+// ── 14. Every plugged-in adapter gets a turn ─────────────────────────────────
+section('Adapter candidates');
+
+const dev = (name: string, address: string) => ({ name, address });
+const order = (devices: Array<{ address: string }>) => devices.map((device) => device.address).join(',');
+
+const pairedLot = [dev('Car Stereo', 'AA'), dev('OBDII', 'BB'), dev('Vgate iCar Pro', 'CC')];
+
+// The remembered adapter leads but the other OBD-looking one still follows —
+// swapping adapters must not end the attempt at the first dead socket.
+if (order(rankAdapterCandidates(pairedLot, 'CC')) !== 'CC,BB') {
+  fail(`swap case gave ${order(rankAdapterCandidates(pairedLot, 'CC'))}`);
+}
+// A remembered address that is no longer paired falls back to the heuristic.
+if (order(rankAdapterCandidates(pairedLot, 'ZZ')) !== 'BB,CC') fail('stale remembered address was not ignored');
+if (order(rankAdapterCandidates(pairedLot, null)) !== 'BB,CC') fail('name heuristic no longer ranks');
+// Remembering a device the heuristic would never pick must still work.
+if (order(rankAdapterCandidates([dev('WEIRD-NAME', 'AA'), dev('Headset', 'BB')], 'AA')) !== 'AA') {
+  fail('a remembered oddly-named adapter was dropped');
+}
+if (order(rankAdapterCandidates([dev('Mystery', 'AA')], null)) !== 'AA') {
+  fail('a single paired device should be tried whatever its name');
+}
+if (rankAdapterCandidates([dev('Car Stereo', 'AA'), dev('Headset', 'BB')], null).length !== 0) {
+  fail('two non-OBD devices should rank nothing rather than guess');
+}
+if (!looksLikeObdAdapter(dev('V-LINK scan tool', 'AA'))) fail('name matching lost its separators tolerance');
+
+// ── 15. Bluetooth failures reach the screen in plain language ────────────────
+section('Bluetooth errors are readable');
+
+const javaRead = humanizeBluetoothError(
+  'java.io.IOException: read failed, socket might closed or timeout, read ret: -1',
+);
+if (/java|IOException|ret: -1/i.test(javaRead)) fail(`java leaked through: "${javaRead}"`);
+if (!/adapter/i.test(javaRead)) fail(`socket failure is not actionable: "${javaRead}"`);
+
+const permission = humanizeBluetoothError('java.lang.SecurityException: Need BLUETOOTH_CONNECT permission');
+if (/java\.|SecurityException/.test(permission)) fail(`class name survived: "${permission}"`);
+if (!permission.includes('BLUETOOTH_CONNECT')) fail(`the useful part was lost: "${permission}"`);
+
+if (humanizeBluetoothError('The car never answered') !== 'The car never answered') {
+  fail('ordinary messages must pass through untouched');
+}
+
+// ── 16. The adapter is told to wait as long as a workshop tool would ─────────
+section('Reply window');
+
+const replyWindow = ADAPTER_INIT_SEQUENCE.find((step) => step.cmd.startsWith('ATST'));
+if (!replyWindow) {
+  fail('nothing sets the reply deadline, so clones keep their 200ms default');
+} else {
+  const ms = Number.parseInt(replyWindow.cmd.slice(4), 16) * 4.096;
+  if (ms < 400) fail(`a ${Math.round(ms)}ms window is still too short for a slow ECU`);
+  if (ms > 1100) fail(`a ${Math.round(ms)}ms window makes every silent probe crawl`);
+}
+if (!ADAPTER_INIT_SEQUENCE.some((step) => step.cmd === 'ATAT1')) {
+  fail('adaptive timing must stay on so a fast car is not slowed to the ceiling');
+}
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');

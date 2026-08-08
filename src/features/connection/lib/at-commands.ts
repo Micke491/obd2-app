@@ -67,6 +67,13 @@ export const PROTOCOL_QUERY = { cmd: 'ATDPN', timeoutMs: 3000 };
  * piece. Letting that finish while nothing is waiting keeps the stray pieces
  * from being taken for answers to the commands that follow.
  *
+ * `ATST96` raises the adapter's reply deadline to ~600 ms (0x96 × 4.096 ms).
+ * Adapters default to about 200 ms, and an ECU that takes longer — routine
+ * during a K-line handshake, common on older CAN gateways — reads as NO DATA
+ * on the very bus the car speaks. A workshop tool connects to those cars by
+ * waiting longer; this is that wait. `ATAT1` still shortens it adaptively once
+ * real replies show how fast the car actually is.
+ *
  * Protocol selection is deliberately not part of this list — it is the one step
  * that depends on what the car turned out to be, so the client appends it.
  */
@@ -77,6 +84,7 @@ export const ADAPTER_INIT_SEQUENCE: InitStep[] = [
   { cmd: 'ATS0', label: 'Disabling spaces', timeoutMs: 3000 },
   { cmd: 'ATH0', label: 'Disabling headers', timeoutMs: 3000 },
   { cmd: 'ATAT1', label: 'Enabling adaptive timing', timeoutMs: 3000 },
+  { cmd: 'ATST96', label: 'Extending the reply window', timeoutMs: 3000 },
 ];
 
 /**

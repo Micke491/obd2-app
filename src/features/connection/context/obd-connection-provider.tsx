@@ -2,7 +2,7 @@ import { createContext, useCallback, useEffect, useMemo, useRef, useState, type 
 import RNBluetoothClassic from 'react-native-bluetooth-classic';
 
 import { Elm327Client, describeError } from '../lib/elm327';
-import { NoAdapterError, findAdapter } from '../lib/find-adapter';
+import { NoAdapterError, findAdapterCandidates } from '../lib/find-adapter';
 import { requestBluetoothPermissions } from '../lib/permissions';
 import type { ObdConnectionState } from '../types';
 
@@ -118,16 +118,37 @@ export function ObdConnectionProvider({ children }: { children: ReactNode }) {
 
     try {
       setState((prev) => ({ ...prev, progress: 'Looking for adapter' }));
-      const device = await findAdapter(preferredAddress);
+      const candidates = await findAdapterCandidates(preferredAddress);
 
-      setState((prev) => ({ ...prev, device, progress: `Connecting to ${device.name}` }));
-      opened = await Elm327Client.connect(device.address);
-      started = opened;
+      // Each candidate in turn, until one both opens a socket and answers a
+      // command. The remembered adapter leads but no longer decides: when it is
+      // the one sitting in a drawer, the attempt moves on to the adapter that
+      // is actually in the car instead of ending on a socket error.
+      let ready: Elm327Client | null = null;
+      let failure: unknown = null;
 
-      clientRef.current = opened;
-      await opened.initializeAdapter((progress) => {
-        setState((prev) => ({ ...prev, progress }));
-      });
+      for (const device of candidates) {
+        setState((prev) => ({ ...prev, device, progress: `Connecting to ${device.name}` }));
+
+        let attempt: Elm327Client | null = null;
+        try {
+          attempt = await Elm327Client.connect(device.address);
+          started = attempt;
+          clientRef.current = attempt;
+          await attempt.initializeAdapter((progress) => {
+            setState((prev) => ({ ...prev, progress }));
+          });
+          ready = attempt;
+          break;
+        } catch (error) {
+          failure = error;
+          clientRef.current = null;
+          if (attempt) void attempt.disconnect();
+        }
+      }
+
+      if (!ready) throw failure ?? new NoAdapterError('No adapter answered.');
+      opened = ready;
     } catch (error) {
       await teardown();
       setState({

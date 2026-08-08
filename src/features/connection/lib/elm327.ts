@@ -9,6 +9,7 @@ import { acceptsReply, linkReplyHealth } from '@/lib/obd/reply-match';
 import { SUPPORT_BLOCK_PIDS, chainsToNextBlock, decodeSupportMask } from '@/lib/obd/supported';
 import { extractPayload } from '@/lib/obd/protocol';
 
+import { humanizeBluetoothError } from './bluetooth-errors';
 import {
   ADAPTER_INIT_SEQUENCE,
   COMMAND_TERMINATOR,
@@ -45,6 +46,15 @@ const TROUBLE_THRESHOLD = 4;
  * which is exactly the case where somebody needs to read it.
  */
 const TRACE_LIMIT = 40;
+
+/**
+ * Rounds of secure-then-insecure dialling before giving up on a device.
+ * Android RFCOMM fails transiently — "read failed, socket might closed" is the
+ * usual wording, most often right after a previous session released the socket
+ * — and one more round after a short pause clears the majority of those.
+ */
+const CONNECT_ROUNDS = 2;
+const CONNECT_RETRY_DELAY_MS = 800;
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -116,16 +126,30 @@ export class Elm327Client {
   }
 
   static async connect(address: string): Promise<Elm327Client> {
-    let device: BluetoothDevice;
+    // A discovery scan monopolises the radio and reliably kills an RFCOMM open.
+    await RNBluetoothClassic.cancelDiscovery().catch(() => undefined);
 
-    try {
-      device = await RNBluetoothClassic.connectToDevice(address, ELM327_CONNECTION_OPTIONS);
-    } catch (secureError) {
-      console.log(`${LOG_PREFIX} secure connect failed, retrying insecure:`, describeError(secureError));
-      device = await RNBluetoothClassic.connectToDevice(address, ELM327_INSECURE_OPTIONS);
+    let lastError: unknown = null;
+
+    for (let round = 1; round <= CONNECT_ROUNDS; round += 1) {
+      if (round > 1) await delay(CONNECT_RETRY_DELAY_MS);
+
+      try {
+        return new Elm327Client(await RNBluetoothClassic.connectToDevice(address, ELM327_CONNECTION_OPTIONS));
+      } catch (secureError) {
+        lastError = secureError;
+        console.log(`${LOG_PREFIX} secure connect failed, retrying insecure:`, describeError(secureError));
+      }
+
+      try {
+        return new Elm327Client(await RNBluetoothClassic.connectToDevice(address, ELM327_INSECURE_OPTIONS));
+      } catch (insecureError) {
+        lastError = insecureError;
+        console.log(`${LOG_PREFIX} insecure connect failed, round ${round}:`, describeError(insecureError));
+      }
     }
 
-    return new Elm327Client(device);
+    throw lastError instanceof Error ? lastError : new Error(describeError(lastError));
   }
 
   /** Configures the adapter. Individual steps are allowed to fail. */
@@ -250,6 +274,7 @@ export class Elm327Client {
     // the next attempt starts from a clean search.
     this.protocolId = null;
     await this.send(PROTOCOL_RESET.cmd, PROTOCOL_RESET.timeoutMs, true).catch(() => undefined);
+    await this.noteBatteryVoltage();
 
     throw new Error(
       heard
@@ -284,6 +309,22 @@ export class Elm327Client {
       await delay(RESYNC_DELAY_MS);
 
       return { answered: false, silent: true, reason };
+    }
+  }
+
+  /**
+   * Records what the adapter sees on the battery pin, for the connection trace.
+   *
+   * OBD pin 16 is powered whenever the adapter is seated, so a reading around
+   * 12 V separates "the car is not talking" from "the adapter is not really in
+   * the port" — the two cases the same error message otherwise lumps together.
+   */
+  private async noteBatteryVoltage(): Promise<void> {
+    try {
+      const raw = (await this.send('ATRV', 2000, true)).replace(/[\r\n]+/g, ' ').trim();
+      this.note('Voltage at the OBD port', raw || '(no reading)');
+    } catch {
+      this.note('Voltage at the OBD port', 'no answer');
     }
   }
 
@@ -388,12 +429,15 @@ export class Elm327Client {
   }
 
   private async runInitSequence(onProgress?: (label: string) => void): Promise<void> {
+    let answered = 0;
+
     for (const step of [...ADAPTER_INIT_SEQUENCE, this.protocolStep()]) {
       if (this.disposed) throw new Error('Disconnected during initialization');
       onProgress?.(step.label);
 
       try {
         await this.send(step.cmd, step.timeoutMs, true);
+        answered += 1;
       } catch (error) {
         this.note(step.cmd, describeError(error));
       }
@@ -402,6 +446,16 @@ export class Elm327Client {
         await delay(step.settleMs);
         await this.device.clear().catch(() => undefined);
       }
+    }
+
+    // Individual steps may fail, but a socket that opened and then answered
+    // nothing at all is not an ELM327 that is listening. Saying so here costs
+    // seconds; carrying on used to cost the full protocol sweep — minutes of
+    // waiting that ended by blaming the car.
+    if (answered === 0) {
+      throw new Error(
+        'The adapter accepted the connection but never answered a command. It may be unpowered, or not an OBD adapter.',
+      );
     }
   }
 
@@ -543,10 +597,10 @@ export class Elm327Client {
 }
 
 export function describeError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === 'string') return error;
+  if (error instanceof Error) return humanizeBluetoothError(error.message);
+  if (typeof error === 'string') return humanizeBluetoothError(error);
   if (error && typeof error === 'object' && 'message' in error) {
-    return String((error as { message: unknown }).message);
+    return humanizeBluetoothError(String((error as { message: unknown }).message));
   }
   return 'Unknown error';
 }
