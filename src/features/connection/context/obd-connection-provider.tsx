@@ -1,6 +1,7 @@
 import { createContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import RNBluetoothClassic from 'react-native-bluetooth-classic';
 
+import { IDLE_STATE, stateAfterAdapterDropped } from '../lib/connection-state';
 import { Elm327Client, describeError } from '../lib/elm327';
 import { NoAdapterError, findAdapterCandidates, looksLikeObdAdapter } from '../lib/find-adapter';
 import { requestBluetoothPermissions } from '../lib/permissions';
@@ -20,18 +21,6 @@ export const ObdConnectionContext = createContext<ObdConnectionValue | null>(nul
  * what distinguishes a slow recovery from a dead one.
  */
 const RECOVERY_ATTEMPTS = 2;
-
-const IDLE_STATE: ObdConnectionState = {
-  status: 'idle',
-  adapter: 'idle',
-  ecu: 'idle',
-  device: null,
-  error: null,
-  progress: null,
-  protocol: null,
-  log: [],
-  supportedPids: [],
-};
 
 export function ObdConnectionProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<ObdConnectionState>(IDLE_STATE);
@@ -208,17 +197,14 @@ export function ObdConnectionProvider({ children }: { children: ReactNode }) {
   }, [teardown]);
 
   // Cranking browns out the OBD port on many cars and cheap adapters reboot,
-  // so a drop must be surfaced rather than left as a stale "connected".
+  // so a drop must be surfaced rather than left as a stale "connected" — but
+  // without discarding what the attempt before it had already worked out.
   useEffect(() => {
     const subscription = RNBluetoothClassic.onDeviceDisconnected(() => {
       if (!clientRef.current) return;
       clientRef.current = null;
       setClient(null);
-      setState({
-        ...IDLE_STATE,
-        status: 'error',
-        error: 'The adapter disconnected. Check it is seated firmly in the OBD port.',
-      });
+      setState(stateAfterAdapterDropped);
     });
 
     return () => subscription.remove();

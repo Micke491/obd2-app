@@ -11,6 +11,7 @@ import {
   PROTOCOL_CLOSE,
 } from '../src/features/connection/lib/at-commands';
 import { humanizeBluetoothError } from '../src/features/connection/lib/bluetooth-errors';
+import { IDLE_STATE, stateAfterAdapterDropped } from '../src/features/connection/lib/connection-state';
 import { describeUnreachableCar, parsePortVoltage } from '../src/features/connection/lib/connection-report';
 import { buildHandshakePlan, worstCaseDuration } from '../src/features/connection/lib/handshake-plan';
 import { AUTHORED, AUTHORED_CODES } from '../src/lib/obd/dtc/authored';
@@ -540,6 +541,47 @@ if (warm.filter((step) => step.restart).length !== 1) fail('a warm plan lost its
 const worst = worstCaseDuration(cold);
 if (worst > 120000) fail(`a hopeless connection would take ${Math.round(worst / 1000)}s to fail`);
 console.log(`  ${cold.length} steps, at most ${Math.round(worst / 1000)}s before giving up`);
+
+// ── 13b. A dropped adapter must not take the evidence with it ────────────────
+section('A dropped adapter keeps the report of what just failed');
+
+const failedAttempt = {
+  ...IDLE_STATE,
+  status: 'error' as const,
+  adapter: 'ready' as const,
+  ecu: 'failed' as const,
+  error: 'The car never answered, on any protocol (last: Adapter could not reach the ECU).',
+  log: ['Contacting ECU: no answer', 'Trying CAN 11-bit, 500 kbps: CAN bus error'],
+};
+
+// The drop lands seconds after the sweep gives up and long before anyone has
+// walked to the Adapter screen to read it. Resetting to the idle state took the
+// trace with it, so the log was reliably empty by the time it was opened — and
+// every attempt to fix a car that would not answer was made blind because of
+// it. The report of the attempt that just failed has to survive the drop.
+const dropped = stateAfterAdapterDropped(failedAttempt);
+if (dropped.log.length !== failedAttempt.log.length) {
+  fail(`a drop threw away ${failedAttempt.log.length - dropped.log.length} lines of the report`);
+}
+if (dropped.status !== 'error') fail('a dropped adapter should read as an error');
+
+// A diagnosis already made says more than the drop that followed it, so it is
+// not overwritten by the generic message.
+if (dropped.error !== failedAttempt.error) {
+  fail(`the diagnosis was replaced with "${dropped.error}"`);
+}
+
+// A link that was working and simply fell out has no diagnosis to keep, and
+// still has to say something.
+const wasConnected = { ...IDLE_STATE, status: 'connected' as const, adapter: 'ready' as const };
+const fellOut = stateAfterAdapterDropped(wasConnected);
+if (!fellOut.error) fail('a drop from a healthy link reported nothing at all');
+if (fellOut.status !== 'error') fail('a drop from a healthy link should read as an error');
+
+// Nothing about the previous link may survive as though it were still live.
+if (fellOut.protocol !== null || fellOut.supportedPids.length !== 0) {
+  fail('a dropped link left its protocol or sensor list looking current');
+}
 
 // ── 14. Every plugged-in adapter gets a turn ─────────────────────────────────
 section('Adapter candidates');
