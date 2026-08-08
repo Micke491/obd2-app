@@ -1,11 +1,9 @@
-import { useEffect, useRef } from 'react';
 import { StyleSheet, View } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 
 import { Button } from '@/components/button';
 import { AppText } from '@/components/text';
 import { useObdConnection } from '@/features/connection/hooks/use-obd-connection';
-import { useSettings } from '@/features/settings/context/settings-provider';
 import { useTheme, useThemedStyles, type Theme } from '@/theme';
 
 import { LinkDot } from './link-dot';
@@ -22,20 +20,9 @@ export function ConnectPanel() {
   const styles = useThemedStyles(createStyles);
   const { status, adapter, ecu, device, error, progress, protocol, connect, disconnect } =
     useObdConnection();
-  const { settings } = useSettings();
 
   const connecting = status === 'connecting';
   const connected = status === 'connected';
-
-  // One attempt per launch, and only when asked for — retrying a failure in a
-  // loop would drain the battery of a phone sitting in a car with no adapter.
-  const attempted = useRef(false);
-  useEffect(() => {
-    if (attempted.current) return;
-    if (!settings.autoConnectOnLaunch || status !== 'idle') return;
-    attempted.current = true;
-    void connect(settings.lastAdapterAddress);
-  }, [connect, settings.autoConnectOnLaunch, settings.lastAdapterAddress, status]);
 
   return (
     <View style={styles.panel}>
@@ -90,7 +77,7 @@ export function ConnectPanel() {
 
       <Button
         label={connected ? 'Disconnect' : connecting ? 'Connecting' : 'Connect to OBD-II'}
-        onPress={() => void (connected ? disconnect() : connect(settings.lastAdapterAddress))}
+        onPress={() => void (connected ? disconnect() : connect())}
         variant={connected ? 'secondary' : 'primary'}
         busy={connecting}
         icon={connected ? 'bluetooth-off' : 'bluetooth'}

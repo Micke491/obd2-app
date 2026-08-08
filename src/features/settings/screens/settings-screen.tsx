@@ -55,7 +55,7 @@ export function SettingsScreen() {
           <NavRow
             icon="bluetooth-settings"
             label="Connection"
-            hint="Polling speed, timeouts and the remembered adapter"
+            hint="Polling speed, timeouts and the last connection attempt"
             value={status === 'connected' ? 'Connected' : 'Idle'}
             onPress={() => router.push('/settings/adapter')}
           />

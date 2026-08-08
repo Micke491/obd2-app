@@ -3,8 +3,14 @@
  * Run with: npx tsx <this file>
  */
 import { looksLikeObdAdapter, rankAdapterCandidates } from '../src/features/connection/lib/adapter-ranking';
-import { ADAPTER_INIT_SEQUENCE } from '../src/features/connection/lib/at-commands';
+import {
+  ADAPTER_INIT_SEQUENCE,
+  ADAPTIVE_TIMING,
+  FIXED_TIMING,
+  PROTOCOL_CLOSE,
+} from '../src/features/connection/lib/at-commands';
 import { humanizeBluetoothError } from '../src/features/connection/lib/bluetooth-errors';
+import { describeUnreachableCar, parsePortVoltage } from '../src/features/connection/lib/connection-report';
 import { buildHandshakePlan, worstCaseDuration } from '../src/features/connection/lib/handshake-plan';
 import { AUTHORED, AUTHORED_CODES } from '../src/lib/obd/dtc/authored';
 import { DTC_CATALOG } from '../src/lib/obd/dtc/catalog';
@@ -373,7 +379,20 @@ for (const protocol of PROTOCOL_SWEEP) {
   if (seen.has(protocol.id)) fail(`protocol ${protocol.id} is swept twice`);
   seen.add(protocol.id);
   if (protocol.name !== PROTOCOL_NAMES[protocol.id]) fail(`protocol ${protocol.id} has two names`);
-  if (protocol.probeTimeoutMs < 3000) fail(`protocol ${protocol.id} is given no time to initialise`);
+  if (protocol.attempts < 1) fail(`protocol ${protocol.id} is never actually asked`);
+  if (protocol.probeTimeoutMs * protocol.attempts < 4000) {
+    fail(`protocol ${protocol.id} is given no time to initialise`);
+  }
+}
+
+// A bus that has to be brought up before it carries anything gets asked twice.
+// One request is not a test of a K-line protocol: the adapter spends the whole
+// of it on the initialisation handshake, and the car it belonged to is written
+// off having never been sent a question.
+for (const protocol of PROTOCOL_SWEEP) {
+  if (protocol.bus === 'K-line' && protocol.attempts < 2) {
+    fail(`${protocol.name} gets one go, which the bus init consumes`);
+  }
 }
 
 // The 11-bit 500 kbps CAN bus fitted to nearly every car since 2008 is the one
@@ -437,12 +456,31 @@ for (const step of cold.filter((entry) => entry.select !== null)) {
   }
 }
 
+// The adapter is restarted once, on the way from the CAN protocols to the older
+// buses. A chip whose CAN controller has dropped off the bus answers CAN ERROR
+// to every protocol after it — K-line and J1850 included, which have no CAN in
+// them at all — so without this the sweep reports a car that "never answered on
+// any protocol" when nothing after the first failure was genuinely tried.
+const restarts = cold.filter((step) => step.restart);
+if (restarts.length !== 1) fail(`the plan restarts the adapter ${restarts.length} times, expected once`);
+if (restarts[0]?.select !== null) {
+  fail('the probe after a restart should search, not name a protocol the chip has just forgotten');
+}
+
+const restartAt = cold.findIndex((step) => step.restart);
+const lastCanAt = cold.map((step) => step.select).lastIndexOf('9');
+const firstKLineAt = cold.map((step) => step.select).indexOf('5');
+if (!(restartAt > lastCanAt && restartAt < firstKLineAt)) {
+  fail('the restart is not sitting between the CAN protocols and the older buses');
+}
+
 // A car that has already answered goes straight back to the bus it answered on,
 // and does not get asked about it a third time further down the plan.
 const warm = buildHandshakePlan('3');
 if (!warm[0].label.includes('ISO 9141-2')) fail(`a known protocol should be named: ${warm[0].label}`);
 if (warm.some((step) => step.select === '3')) fail('the known protocol is swept as well as armed');
 if (warm.length !== cold.length - 1) fail('a known protocol should save exactly one step');
+if (warm.filter((step) => step.restart).length !== 1) fail('a warm plan lost its restart');
 
 // A failed attempt has to end. Somebody sitting in a car with the adapter in
 // their glovebox should get an answer inside a couple of minutes, not sit
@@ -459,25 +497,31 @@ const order = (devices: Array<{ address: string }>) => devices.map((device) => d
 
 const pairedLot = [dev('Car Stereo', 'AA'), dev('OBDII', 'BB'), dev('Vgate iCar Pro', 'CC')];
 
-// The remembered adapter leads but the other OBD-looking one still follows —
-// swapping adapters must not end the attempt at the first dead socket.
-if (order(rankAdapterCandidates(pairedLot, 'CC')) !== 'CC,BB') {
-  fail(`swap case gave ${order(rankAdapterCandidates(pairedLot, 'CC'))}`);
+// Names that read as an adapter lead, in the order they were paired, and the
+// rest follow rather than being dropped.
+if (order(rankAdapterCandidates(pairedLot)) !== 'BB,CC,AA') {
+  fail(`ranking gave ${order(rankAdapterCandidates(pairedLot))}`);
 }
-// A remembered address that is no longer paired falls back to the heuristic.
-if (order(rankAdapterCandidates(pairedLot, 'ZZ')) !== 'BB,CC') fail('stale remembered address was not ignored');
-if (order(rankAdapterCandidates(pairedLot, null)) !== 'BB,CC') fail('name heuristic no longer ranks');
-// Remembering a device the heuristic would never pick must still work.
-if (order(rankAdapterCandidates([dev('WEIRD-NAME', 'AA'), dev('Headset', 'BB')], 'AA')) !== 'AA') {
-  fail('a remembered oddly-named adapter was dropped');
-}
-if (order(rankAdapterCandidates([dev('Mystery', 'AA')], null)) !== 'AA') {
+if (order(rankAdapterCandidates([dev('Mystery', 'AA')])) !== 'AA') {
   fail('a single paired device should be tried whatever its name');
 }
-if (rankAdapterCandidates([dev('Car Stereo', 'AA'), dev('Headset', 'BB')], null).length !== 0) {
-  fail('two non-OBD devices should rank nothing rather than guess');
+
+// Nothing is remembered any more, so a first connection and a hundredth take
+// exactly the same path — running twice must not change the answer.
+if (order(rankAdapterCandidates(pairedLot)) !== order(rankAdapterCandidates(pairedLot))) {
+  fail('ranking is not repeatable, so some state survived a connection');
 }
+
+// An adapter fresh out of the box can call itself anything, and refusing to
+// dial it is the app declining to try the only device that would have worked.
+const oddOnesOut = [dev('Car Stereo', 'AA'), dev('BT-04A', 'BB')];
+if (order(rankAdapterCandidates(oddOnesOut)) !== 'AA,BB') {
+  fail(`an unrecognised name must still get a turn: ${order(rankAdapterCandidates(oddOnesOut))}`);
+}
+if (rankAdapterCandidates([]).length !== 0) fail('nothing paired should rank nothing');
+
 if (!looksLikeObdAdapter(dev('V-LINK scan tool', 'AA'))) fail('name matching lost its separators tolerance');
+if (looksLikeObdAdapter(dev('Headset', 'AA'))) fail('a headset now reads as an adapter');
 
 // ── 15. Bluetooth failures reach the screen in plain language ────────────────
 section('Bluetooth errors are readable');
@@ -507,8 +551,49 @@ if (!replyWindow) {
   if (ms < 400) fail(`a ${Math.round(ms)}ms window is still too short for a slow ECU`);
   if (ms > 1100) fail(`a ${Math.round(ms)}ms window makes every silent probe crawl`);
 }
-if (!ADAPTER_INIT_SEQUENCE.some((step) => step.cmd === 'ATAT1')) {
+if (!ADAPTER_INIT_SEQUENCE.some((step) => step.cmd === ADAPTIVE_TIMING.cmd)) {
   fail('adaptive timing must stay on so a fast car is not slowed to the ceiling');
+}
+
+// Adaptive timing is the wrong setting while still looking for a car: the CAN
+// probes that fail in milliseconds teach the adapter a deadline far too short
+// for the K-line ECU tried a few steps later, and that ECU then reads as NO DATA
+// on the very bus it speaks. The sweep pins the window open and hands it back.
+if (FIXED_TIMING.cmd !== 'ATAT0') fail(`${FIXED_TIMING.cmd} does not fix the reply window`);
+if (ADAPTIVE_TIMING.cmd !== 'ATAT1') fail(`${ADAPTIVE_TIMING.cmd} does not restore adaptive timing`);
+if (PROTOCOL_CLOSE.cmd !== 'ATPC') fail(`${PROTOCOL_CLOSE.cmd} does not close the open protocol`);
+
+// ── 17. A car that will not answer is told which fault to go and fix ─────────
+section('Unreachable cars are diagnosed, not just reported');
+
+const expectVolts = (raw: string, expected: number | null) => {
+  const actual = parsePortVoltage(raw);
+  if (actual !== expected) fail(`parsePortVoltage(${JSON.stringify(raw)}) gave ${actual}`);
+};
+
+expectVolts('12.4V', 12.4);
+expectVolts('12.4V\r\r', 12.4);
+expectVolts(' 11.9 V ', 11.9);
+expectVolts('13V', 13);
+expectVolts('', null);
+expectVolts('NO DATA', null);
+expectVolts('?', null);
+
+// A powered port and a dead one are the two things this failure can mean, and
+// they need opposite actions. Naming the voltage is what tells them apart.
+const powered = describeUnreachableCar('CAN bus error', 12.4);
+if (!powered.includes('12.4V')) fail(`a powered port should say so: ${powered}`);
+if (!/ignition/i.test(powered)) fail('a powered port should send the driver to the ignition');
+if (/pushed fully/i.test(powered)) fail('a powered port is already pushed fully in');
+
+const unpowered = describeUnreachableCar('No data', 2.1);
+if (!/push the adapter fully in/i.test(unpowered)) fail(`a dead port should say so: ${unpowered}`);
+
+const unknown = describeUnreachableCar(null, null);
+if (unknown.includes('(last:')) fail('nothing heard should not be reported as something heard');
+if (!unknown.includes('never answered')) fail(`the fallback lost its meaning: ${unknown}`);
+if (!describeUnreachableCar('CAN bus error', null).includes('(last: CAN bus error)')) {
+  fail('what the adapter last said must survive into the message');
 }
 
 // ── Result ──────────────────────────────────────────────────────────────────

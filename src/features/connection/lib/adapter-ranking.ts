@@ -15,26 +15,16 @@ export function looksLikeObdAdapter(device: AdapterCandidate): boolean {
 /**
  * Orders the paired devices by how likely each is to be the adapter in the car.
  *
- * The adapter that worked last time goes first, but it is tried, not trusted.
- * Somebody who owns two adapters swaps them, and the remembered one being
- * unpowered used to end the attempt right there — with a raw Java socket error
- * for an explanation. Every other OBD-looking device follows, so whichever
- * adapter is actually plugged in gets its turn.
+ * Nothing is remembered between sessions and nothing is filtered out. The names
+ * that read as an adapter go first, then everything else paired, because adapter
+ * naming is not standardised and a brand-new one out of the box can call itself
+ * anything at all. Ruling those out used to mean the app refused to try the only
+ * device that would have worked; trying them last costs nothing on a phone where
+ * the first guess is right, which is nearly all of them.
  */
-export function rankAdapterCandidates<T extends AdapterCandidate>(
-  bonded: T[],
-  preferredAddress?: string | null,
-): T[] {
-  const remembered = preferredAddress
-    ? bonded.filter((device) => device.address === preferredAddress)
-    : [];
-  const named = bonded.filter(
-    (device) => device.address !== preferredAddress && looksLikeObdAdapter(device),
-  );
+export function rankAdapterCandidates<T extends AdapterCandidate>(bonded: T[]): T[] {
+  const named = bonded.filter((device) => looksLikeObdAdapter(device));
+  const rest = bonded.filter((device) => !looksLikeObdAdapter(device));
 
-  const ranked = [...remembered, ...named];
-  if (ranked.length > 0) return ranked;
-
-  // A phone paired with exactly one device has nothing to disambiguate.
-  return bonded.length === 1 ? [...bonded] : [];
+  return [...named, ...rest];
 }

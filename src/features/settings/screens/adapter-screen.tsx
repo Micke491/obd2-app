@@ -1,7 +1,6 @@
-import { Alert, ScrollView, StyleSheet, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 
-import { Button } from '@/components/button';
-import { ChoiceRow, FieldRow, SwitchRow } from '@/components/rows';
+import { ChoiceRow, FieldRow } from '@/components/rows';
 import { Screen } from '@/components/screen';
 import { Section } from '@/components/section';
 import { AppText } from '@/components/text';
@@ -22,22 +21,6 @@ export function AdapterScreen() {
   const styles = useThemedStyles(createStyles);
   const { settings, update } = useSettings();
   const { protocol, log } = useObdConnection();
-
-  const forget = () => {
-    Alert.alert(
-      'Forget this adapter?',
-      'Next time you connect, the app will search your paired devices again instead of going ' +
-        'straight to this one.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Forget',
-          style: 'destructive',
-          onPress: () => update({ lastAdapterAddress: null, lastAdapterName: null }),
-        },
-      ],
-    );
-  };
 
   return (
     <Screen edges={{ top: false }}>
@@ -72,25 +55,6 @@ export function AdapterScreen() {
           ))}
         </Section>
 
-        <Section title="Remembered adapter">
-          {settings.lastAdapterAddress ? (
-            <>
-              <FieldRow label="Name">
-                <AppText variant="bodyStrong">{settings.lastAdapterName ?? 'Unnamed device'}</AppText>
-              </FieldRow>
-              <FieldRow label="Address">
-                <AppText variant="mono">{settings.lastAdapterAddress}</AppText>
-              </FieldRow>
-              <Button label="Forget this adapter" onPress={forget} variant="secondary" />
-            </>
-          ) : (
-            <AppText variant="body" tone="muted">
-              No adapter remembered yet. The first one that connects successfully is saved here, so
-              a phone paired with several devices still connects first try.
-            </AppText>
-          )}
-        </Section>
-
         <Section
           title="Last connection"
           hint="What the app and the adapter said to each other, most recent attempt. Worth reading when a car will not answer."
@@ -115,15 +79,6 @@ export function AdapterScreen() {
               here, including every protocol tried and what came back.
             </AppText>
           )}
-        </Section>
-
-        <Section title="On launch">
-          <SwitchRow
-            label="Connect automatically"
-            hint="Try the remembered adapter as soon as the app opens"
-            value={settings.autoConnectOnLaunch}
-            onValueChange={(autoConnectOnLaunch) => update({ autoConnectOnLaunch })}
-          />
         </Section>
       </ScrollView>
     </Screen>

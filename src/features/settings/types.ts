@@ -24,10 +24,6 @@ export type Settings = {
   pollIntervalMs: PollRate;
   queryTimeoutMs: QueryTimeout;
   keepAwake: boolean;
-  autoConnectOnLaunch: boolean;
-  /** Remembered so a garage full of paired devices still connects first try. */
-  lastAdapterAddress: string | null;
-  lastAdapterName: string | null;
   dashboardPids: string[];
   /** The Live data working set. */
   pinnedPids: string[];

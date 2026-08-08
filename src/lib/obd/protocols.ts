@@ -9,10 +9,14 @@
  * what turns "this app cannot see my car" into a connection.
  */
 
+/** The wiring behind a protocol. Buses of a kind fail together. */
+export type ObdBus = 'CAN' | 'K-line' | 'J1850';
+
 export type ObdProtocol = {
   /** The digit `ATSP` takes. */
   id: string;
   name: string;
+  bus: ObdBus;
   /**
    * Longest one `0100` on this protocol can reasonably take. The K-line
    * protocols carry out a slow initialisation handshake before any data moves —
@@ -20,6 +24,17 @@ export type ObdProtocol = {
    * more room than a CAN bus that either answers immediately or not at all.
    */
   probeTimeoutMs: number;
+  /**
+   * How many times to ask before ruling the protocol out.
+   *
+   * One request is not a fair test of a bus that has to be brought up first: on
+   * K-line the adapter spends the whole of the first request on its
+   * initialisation handshake, and on CAN the first frame after a protocol change
+   * is the one most likely to go unacknowledged. Asking twice is what a workshop
+   * tool does, and it costs nothing on the car that answers straight away —
+   * that car never reaches the sweep at all.
+   */
+  attempts: number;
 };
 
 export const PROTOCOL_NAMES: Record<string, string> = {
@@ -51,15 +66,15 @@ export const PROTOCOL_NAMES: Record<string, string> = {
  * J1939 is left out too, being a truck protocol that no OBD-II car answers.
  */
 export const PROTOCOL_SWEEP: ObdProtocol[] = [
-  { id: '6', name: PROTOCOL_NAMES['6'], probeTimeoutMs: 4000 },
-  { id: '7', name: PROTOCOL_NAMES['7'], probeTimeoutMs: 4000 },
-  { id: '8', name: PROTOCOL_NAMES['8'], probeTimeoutMs: 4000 },
-  { id: '9', name: PROTOCOL_NAMES['9'], probeTimeoutMs: 4000 },
-  { id: '5', name: PROTOCOL_NAMES['5'], probeTimeoutMs: 7000 },
-  { id: '4', name: PROTOCOL_NAMES['4'], probeTimeoutMs: 10000 },
-  { id: '3', name: PROTOCOL_NAMES['3'], probeTimeoutMs: 10000 },
-  { id: '1', name: PROTOCOL_NAMES['1'], probeTimeoutMs: 6000 },
-  { id: '2', name: PROTOCOL_NAMES['2'], probeTimeoutMs: 6000 },
+  { id: '6', name: PROTOCOL_NAMES['6'], bus: 'CAN', probeTimeoutMs: 2500, attempts: 2 },
+  { id: '7', name: PROTOCOL_NAMES['7'], bus: 'CAN', probeTimeoutMs: 2500, attempts: 2 },
+  { id: '8', name: PROTOCOL_NAMES['8'], bus: 'CAN', probeTimeoutMs: 2500, attempts: 2 },
+  { id: '9', name: PROTOCOL_NAMES['9'], bus: 'CAN', probeTimeoutMs: 2500, attempts: 2 },
+  { id: '5', name: PROTOCOL_NAMES['5'], bus: 'K-line', probeTimeoutMs: 6000, attempts: 2 },
+  { id: '4', name: PROTOCOL_NAMES['4'], bus: 'K-line', probeTimeoutMs: 7000, attempts: 2 },
+  { id: '3', name: PROTOCOL_NAMES['3'], bus: 'K-line', probeTimeoutMs: 7000, attempts: 2 },
+  { id: '1', name: PROTOCOL_NAMES['1'], bus: 'J1850', probeTimeoutMs: 4000, attempts: 1 },
+  { id: '2', name: PROTOCOL_NAMES['2'], bus: 'J1850', probeTimeoutMs: 4000, attempts: 1 },
 ];
 
 /**

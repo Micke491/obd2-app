@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { useEffect, useMemo } from 'react';
+import { useMemo } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 
@@ -18,8 +18,8 @@ export function HubScreen() {
   const router = useRouter();
   const theme = useTheme();
   const styles = useThemedStyles(createStyles);
-  const { status, supportedPids, device } = useObdConnection();
-  const { settings, update } = useSettings();
+  const { status, supportedPids } = useObdConnection();
+  const { settings } = useSettings();
   // Only ever reflects a read the driver asked for — the hub never polls the
   // car for faults on its own, and a clear puts this back to knowing nothing.
   const { state: codesState, total: codeTotal, reported } = useTroubleCodes();
@@ -27,14 +27,6 @@ export function HubScreen() {
   useKeepAwakeWhen(settings.keepAwake);
 
   const connected = status === 'connected';
-
-  // Remembering the adapter that actually worked turns a garage full of paired
-  // devices from a dead end into a silent reconnect next time.
-  useEffect(() => {
-    if (!connected || !device) return;
-    if (settings.lastAdapterAddress === device.address) return;
-    update({ lastAdapterAddress: device.address, lastAdapterName: device.name ?? null });
-  }, [connected, device, settings.lastAdapterAddress, update]);
 
   const cards: HubCardProps[] = useMemo(
     () => [

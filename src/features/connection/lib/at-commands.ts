@@ -54,6 +54,31 @@ export const PROTOCOL_RESET: InitStep = {
 /** Choosing a protocol by name is a local setting, so it answers immediately. */
 export const PROTOCOL_SELECT_TIMEOUT_MS = 3000;
 
+/**
+ * Closes whatever protocol is currently open, before another is selected.
+ *
+ * Selecting a protocol on top of a live one is not a clean test of the new one.
+ * A K-line session carries on sending its wakeup messages, and a CAN controller
+ * that dropped off the bus during a failed probe stays off it — reporting
+ * `CAN ERROR` to everything that follows, including the protocols that have no
+ * CAN in them at all. That is what a sweep looks like when it blames the car for
+ * a wedged adapter: nine protocols tried, one answer given to all of them.
+ */
+export const PROTOCOL_CLOSE = { cmd: 'ATPC', timeoutMs: 2500 };
+
+/**
+ * Fixes the reply window at its full width, and puts it back under the
+ * adapter's own control.
+ *
+ * Adaptive timing shortens the wait to match the replies it has actually seen,
+ * which is right once a car is answering and wrong while still looking for one:
+ * the CAN probes that fail in milliseconds teach it a deadline far too short for
+ * the K-line ECU tried a few steps later, and that ECU then reads as NO DATA on
+ * the very bus it speaks.
+ */
+export const FIXED_TIMING = { cmd: 'ATAT0', timeoutMs: 3000 };
+export const ADAPTIVE_TIMING = { cmd: 'ATAT1', timeoutMs: 3000 };
+
 /** Asks which protocol is actually in use, once the car has answered. */
 export const PROTOCOL_QUERY = { cmd: 'ATDPN', timeoutMs: 3000 };
 
@@ -67,12 +92,13 @@ export const PROTOCOL_QUERY = { cmd: 'ATDPN', timeoutMs: 3000 };
  * piece. Letting that finish while nothing is waiting keeps the stray pieces
  * from being taken for answers to the commands that follow.
  *
- * `ATST96` raises the adapter's reply deadline to ~600 ms (0x96 × 4.096 ms).
- * Adapters default to about 200 ms, and an ECU that takes longer — routine
- * during a K-line handshake, common on older CAN gateways — reads as NO DATA
- * on the very bus the car speaks. A workshop tool connects to those cars by
- * waiting longer; this is that wait. `ATAT1` still shortens it adaptively once
- * real replies show how fast the car actually is.
+ * `ATSTFF` opens the adapter's reply deadline to its widest, ~1.05 s
+ * (0xFF × 4.096 ms). Adapters default to about 200 ms, and an ECU that takes
+ * longer — routine during a K-line handshake, common on older CAN gateways —
+ * reads as NO DATA on the very bus the car speaks. A workshop tool connects to
+ * those cars by waiting longer; this is that wait. Opening it all the way costs
+ * a fast car nothing, because `ATAT1` shortens it adaptively as soon as real
+ * replies show how quick the car actually is.
  *
  * Protocol selection is deliberately not part of this list — it is the one step
  * that depends on what the car turned out to be, so the client appends it.
@@ -84,8 +110,18 @@ export const ADAPTER_INIT_SEQUENCE: InitStep[] = [
   { cmd: 'ATS0', label: 'Disabling spaces', timeoutMs: 3000 },
   { cmd: 'ATH0', label: 'Disabling headers', timeoutMs: 3000 },
   { cmd: 'ATAT1', label: 'Enabling adaptive timing', timeoutMs: 3000 },
-  { cmd: 'ATST96', label: 'Extending the reply window', timeoutMs: 3000 },
+  { cmd: 'ATSTFF', label: 'Extending the reply window', timeoutMs: 3000 },
 ];
+
+/**
+ * Init steps that have to answer before the rest are worth sending.
+ *
+ * Every ELM327 answers these, so a device that ignores all three is not one.
+ * Finding that out after three commands rather than the whole sequence is what
+ * keeps a paired speaker from costing half a minute on the way to the adapter
+ * sitting behind it in the list.
+ */
+export const INIT_STEPS_THAT_MUST_ANSWER = 3;
 
 /**
  * First real OBD query. Selecting a protocol only decides what the adapter will
@@ -101,7 +137,7 @@ export const ADAPTER_INIT_SEQUENCE: InitStep[] = [
 export const ECU_HANDSHAKE: InitStep = {
   cmd: '0100',
   label: 'Contacting ECU',
-  timeoutMs: 22000,
+  timeoutMs: 20000,
 };
 
 /**
@@ -109,7 +145,18 @@ export const ECU_HANDSHAKE: InitStep = {
  * search that ran past the first timeout often has the protocol by now, and one
  * more request is all it needs.
  */
-export const ECU_HANDSHAKE_RETRY_MS = 10000;
+export const ECU_HANDSHAKE_RETRY_MS = 8000;
+
+/**
+ * The search that follows a mid-sweep reset of the adapter.
+ *
+ * This is the step that reproduces, from inside the app, the one piece of
+ * advice that fixes these cases in every forum thread: unplug the adapter, plug
+ * it back in, try again. A chip that has been left confused by a run of failed
+ * protocol changes cannot be talked round — only restarted — and a search begun
+ * from a clean chip is a genuinely different attempt from the one that failed.
+ */
+export const ECU_RESTART_PROBE_MS = 10000;
 
 /**
  * Probes that go completely unanswered before the protocol sweep is abandoned.

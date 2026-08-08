@@ -10,12 +10,17 @@ import { SUPPORT_BLOCK_PIDS, chainsToNextBlock, decodeSupportMask } from '@/lib/
 import { extractPayload } from '@/lib/obd/protocol';
 
 import { humanizeBluetoothError } from './bluetooth-errors';
+import { describeUnreachableCar, parsePortVoltage } from './connection-report';
 import {
   ADAPTER_INIT_SEQUENCE,
+  ADAPTIVE_TIMING,
   COMMAND_TERMINATOR,
   ECU_HANDSHAKE,
   ELM327_CONNECTION_OPTIONS,
   ELM327_INSECURE_OPTIONS,
+  FIXED_TIMING,
+  INIT_STEPS_THAT_MUST_ANSWER,
+  PROTOCOL_CLOSE,
   PROTOCOL_QUERY,
   PROTOCOL_RESET,
   PROTOCOL_SELECT_TIMEOUT_MS,
@@ -125,13 +130,21 @@ export class Elm327Client {
     return [...this.trace];
   }
 
-  static async connect(address: string): Promise<Elm327Client> {
+  /**
+   * Opens a socket to one paired device.
+   *
+   * `rounds` is how hard to try. A device that looks like an adapter is worth a
+   * second round after a pause; one that is only being tried because nothing
+   * better is paired is not, and spending the extra second on it delays reaching
+   * the adapter sitting behind it in the list.
+   */
+  static async connect(address: string, rounds = CONNECT_ROUNDS): Promise<Elm327Client> {
     // A discovery scan monopolises the radio and reliably kills an RFCOMM open.
     await RNBluetoothClassic.cancelDiscovery().catch(() => undefined);
 
     let lastError: unknown = null;
 
-    for (let round = 1; round <= CONNECT_ROUNDS; round += 1) {
+    for (let round = 1; round <= rounds; round += 1) {
       if (round > 1) await delay(CONNECT_RETRY_DELAY_MS);
 
       try {
@@ -223,6 +236,9 @@ export class Elm327Client {
     let sweeping = false;
 
     const known = this.protocolId;
+    // Which protocol the adapter is currently holding, as far as the app knows.
+    // Only used to name the bus when the adapter is too old to answer `ATDPN`.
+    let armed = known;
 
     for (const step of buildHandshakePlan(known)) {
       if (this.disposed) throw new Error('Not connected');
@@ -233,18 +249,36 @@ export class Elm327Client {
         if (!sweeping) {
           sweeping = true;
           silent = 0;
+          await this.holdReplyWindowOpen();
         }
 
         if (silent >= SILENT_PROBES_BEFORE_GIVING_UP) {
+          await this.restoreAdaptiveTiming();
           throw new Error(
             'The adapter stopped answering. Unplug it, plug it back in, then connect again.',
           );
         }
       }
 
+      onProgress?.(step.label);
+
+      if (step.restart) {
+        if (!(await this.restartAdapter())) {
+          silent += 1;
+          continue;
+        }
+        // A chip that has just come back up has earned a clean slate: none of
+        // the silence before the restart says anything about what follows it.
+        silent = 0;
+        armed = null;
+      }
+
       if (step.select) {
+        await this.closeProtocol();
+
         try {
           await this.send(`ATSP${step.select}`, PROTOCOL_SELECT_TIMEOUT_MS, true);
+          armed = step.select;
         } catch (error) {
           this.note(step.label, describeError(error));
           silent += 1;
@@ -252,35 +286,35 @@ export class Elm327Client {
         }
       }
 
-      onProgress?.(step.label);
-      const probe = await this.probeEcu(step.label, step.timeoutMs);
+      let unanswered = true;
 
-      if (probe.answered) {
-        // An adapter too old to answer `ATDPN` leaves the protocol unnamed, so
-        // fall back to the one this step forced, then to the one already known.
-        this.protocolId = this.protocolId ?? step.select ?? known;
-        return;
+      for (let attempt = 1; attempt <= step.attempts; attempt += 1) {
+        const probe = await this.probeEcu(step.label, step.timeoutMs);
+
+        if (probe.answered) {
+          // An adapter too old to answer `ATDPN` leaves the protocol unnamed, so
+          // fall back to whichever bus this attempt had armed.
+          this.protocolId = this.protocolId ?? armed;
+          await this.restoreAdaptiveTiming();
+          return;
+        }
+
+        if (!probe.silent) {
+          unanswered = false;
+          heard = probe.reason;
+        }
       }
 
-      if (probe.silent) {
-        silent += 1;
-      } else {
-        silent = 0;
-        heard = probe.reason;
-      }
+      silent = unanswered ? silent + 1 : 0;
     }
 
     // Leave auto-detection armed rather than whichever bus was tried last, so
     // the next attempt starts from a clean search.
     this.protocolId = null;
+    await this.restoreAdaptiveTiming();
     await this.send(PROTOCOL_RESET.cmd, PROTOCOL_RESET.timeoutMs, true).catch(() => undefined);
-    await this.noteBatteryVoltage();
 
-    throw new Error(
-      heard
-        ? `The car never answered, on any protocol (last: ${heard}). Check the ignition is on and the adapter is pushed fully into the port.`
-        : 'The car never answered, on any protocol. Check the ignition is on and the adapter is pushed fully into the port.',
-    );
+    throw new Error(describeUnreachableCar(heard, await this.notePortVoltage()));
   }
 
   /** One `0100`, and what to make of the answer. */
@@ -313,18 +347,61 @@ export class Elm327Client {
   }
 
   /**
-   * Records what the adapter sees on the battery pin, for the connection trace.
+   * Shuts the current protocol down before another is opened. Never fatal —
+   * an adapter too old to know `ATPC` answers `?` and carries on.
+   */
+  private async closeProtocol(): Promise<void> {
+    await this.send(PROTOCOL_CLOSE.cmd, PROTOCOL_CLOSE.timeoutMs, true).catch(() => undefined);
+  }
+
+  /**
+   * Resets the chip and configures it again, mid-sweep.
+   *
+   * `ATZ` is the only thing that clears a controller which has dropped off the
+   * bus, and it is what the driver would otherwise achieve by pulling the
+   * adapter out of the port. The protocol is deliberately left unset, so the
+   * probe that follows is a fresh auto-detection rather than a repeat of
+   * whichever bus was being tried when things went wrong.
+   */
+  private async restartAdapter(): Promise<boolean> {
+    this.protocolId = null;
+
+    try {
+      await this.runInitSequence();
+    } catch (error) {
+      this.note('Restarting the adapter', describeError(error));
+      return false;
+    }
+
+    await this.holdReplyWindowOpen();
+    this.note('Restarting the adapter', 'back up, searching again from scratch');
+    return true;
+  }
+
+  private async holdReplyWindowOpen(): Promise<void> {
+    await this.send(FIXED_TIMING.cmd, FIXED_TIMING.timeoutMs, true).catch(() => undefined);
+  }
+
+  private async restoreAdaptiveTiming(): Promise<void> {
+    await this.send(ADAPTIVE_TIMING.cmd, ADAPTIVE_TIMING.timeoutMs, true).catch(() => undefined);
+  }
+
+  /**
+   * Records what the adapter sees on the battery pin, for the connection trace,
+   * and reports it back in volts.
    *
    * OBD pin 16 is powered whenever the adapter is seated, so a reading around
    * 12 V separates "the car is not talking" from "the adapter is not really in
    * the port" — the two cases the same error message otherwise lumps together.
    */
-  private async noteBatteryVoltage(): Promise<void> {
+  private async notePortVoltage(): Promise<number | null> {
     try {
       const raw = (await this.send('ATRV', 2000, true)).replace(/[\r\n]+/g, ' ').trim();
       this.note('Voltage at the OBD port', raw || '(no reading)');
+      return parsePortVoltage(raw);
     } catch {
       this.note('Voltage at the OBD port', 'no answer');
+      return null;
     }
   }
 
@@ -430,6 +507,7 @@ export class Elm327Client {
 
   private async runInitSequence(onProgress?: (label: string) => void): Promise<void> {
     let answered = 0;
+    let sent = 0;
 
     for (const step of [...ADAPTER_INIT_SEQUENCE, this.protocolStep()]) {
       if (this.disposed) throw new Error('Disconnected during initialization');
@@ -446,16 +524,17 @@ export class Elm327Client {
         await delay(step.settleMs);
         await this.device.clear().catch(() => undefined);
       }
-    }
 
-    // Individual steps may fail, but a socket that opened and then answered
-    // nothing at all is not an ELM327 that is listening. Saying so here costs
-    // seconds; carrying on used to cost the full protocol sweep — minutes of
-    // waiting that ended by blaming the car.
-    if (answered === 0) {
-      throw new Error(
-        'The adapter accepted the connection but never answered a command. It may be unpowered, or not an OBD adapter.',
-      );
+      // Individual steps may fail, but a socket that opened and then answered
+      // nothing at all is not an ELM327 that is listening. Saying so here costs
+      // seconds; carrying on used to cost the full protocol sweep — minutes of
+      // waiting that ended by blaming the car.
+      sent += 1;
+      if (answered === 0 && sent >= INIT_STEPS_THAT_MUST_ANSWER) {
+        throw new Error(
+          'The adapter accepted the connection but never answered a command. It may be unpowered, or not an OBD adapter.',
+        );
+      }
     }
   }
 

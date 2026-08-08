@@ -2,14 +2,13 @@ import { createContext, useCallback, useEffect, useMemo, useRef, useState, type 
 import RNBluetoothClassic from 'react-native-bluetooth-classic';
 
 import { Elm327Client, describeError } from '../lib/elm327';
-import { NoAdapterError, findAdapterCandidates } from '../lib/find-adapter';
+import { NoAdapterError, findAdapterCandidates, looksLikeObdAdapter } from '../lib/find-adapter';
 import { requestBluetoothPermissions } from '../lib/permissions';
 import type { ObdConnectionState } from '../types';
 
 export type ObdConnectionValue = ObdConnectionState & {
   client: Elm327Client | null;
-  /** Pass the remembered address to skip the name heuristic entirely. */
-  connect: (preferredAddress?: string | null) => Promise<boolean>;
+  connect: () => Promise<boolean>;
   disconnect: () => Promise<void>;
 };
 
@@ -95,7 +94,7 @@ export function ObdConnectionProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const connect = useCallback(async (preferredAddress?: string | null): Promise<boolean> => {
+  const connect = useCallback(async (): Promise<boolean> => {
     await teardown();
     setState({ ...IDLE_STATE, status: 'connecting', adapter: 'pending', progress: 'Checking permissions' });
 
@@ -118,12 +117,13 @@ export function ObdConnectionProvider({ children }: { children: ReactNode }) {
 
     try {
       setState((prev) => ({ ...prev, progress: 'Looking for adapter' }));
-      const candidates = await findAdapterCandidates(preferredAddress);
+      const candidates = await findAdapterCandidates();
 
       // Each candidate in turn, until one both opens a socket and answers a
-      // command. The remembered adapter leads but no longer decides: when it is
-      // the one sitting in a drawer, the attempt moves on to the adapter that
-      // is actually in the car instead of ending on a socket error.
+      // command. Nothing is remembered from last time, so a first connection and
+      // a hundredth take the same path — and an adapter that is merely paired,
+      // rather than plugged in, costs one failed dial instead of the whole
+      // attempt.
       let ready: Elm327Client | null = null;
       let failure: unknown = null;
 
@@ -132,7 +132,7 @@ export function ObdConnectionProvider({ children }: { children: ReactNode }) {
 
         let attempt: Elm327Client | null = null;
         try {
-          attempt = await Elm327Client.connect(device.address);
+          attempt = await Elm327Client.connect(device.address, looksLikeObdAdapter(device) ? undefined : 1);
           started = attempt;
           clientRef.current = attempt;
           await attempt.initializeAdapter((progress) => {
