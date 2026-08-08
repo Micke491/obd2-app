@@ -3,7 +3,13 @@ import RNBluetoothClassic, {
   type BluetoothEventSubscription,
 } from 'react-native-bluetooth-classic';
 
-import { markerOffset, parseResponse, responseModeFor, type ObdResponse } from '@/lib/obd/protocol';
+import {
+  indicatesControllerFault,
+  markerOffset,
+  parseResponse,
+  responseModeFor,
+  type ObdResponse,
+} from '@/lib/obd/protocol';
 import { PROTOCOL_NAMES, protocolIdFromReply } from '@/lib/obd/protocols';
 import { acceptsReply, linkReplyHealth } from '@/lib/obd/reply-match';
 import { SUPPORT_BLOCK_PIDS, chainsToNextBlock, decodeSupportMask } from '@/lib/obd/supported';
@@ -20,6 +26,7 @@ import {
   ELM327_INSECURE_OPTIONS,
   FIXED_TIMING,
   INIT_STEPS_THAT_MUST_ANSWER,
+  MAX_CONTROLLER_RESETS,
   PROTOCOL_CLOSE,
   PROTOCOL_QUERY,
   PROTOCOL_RESET,
@@ -47,10 +54,12 @@ const RESYNC_DELAY_MS = 300;
 const TROUBLE_THRESHOLD = 4;
 
 /**
- * Lines kept from the connection attempt. Enough to hold a full protocol sweep,
- * which is exactly the case where somebody needs to read it.
+ * Lines kept from the connection attempt. Enough to hold a full protocol sweep
+ * and the resets threaded through it, which is exactly the case where somebody
+ * needs to read it — and the oldest lines are dropped first, so a limit set too
+ * tight loses the opening attempts, the part worth reading most.
  */
-const TRACE_LIMIT = 40;
+const TRACE_LIMIT = 60;
 
 /**
  * Rounds of secure-then-insecure dialling before giving up on a device.
@@ -69,6 +78,11 @@ type Probe = {
   answered: boolean;
   /** Nothing came back at all, as opposed to a reply that carried bad news. */
   silent: boolean;
+  /**
+   * The bad news was the adapter's own: its controller has dropped off the bus
+   * and will answer every protocol after this one the same way.
+   */
+  wedging: boolean;
   reason: string;
 };
 
@@ -235,6 +249,11 @@ export class Elm327Client {
     let silent = 0;
     let sweeping = false;
 
+    // The adapter's controller has dropped off the bus. Tracks the last thing
+    // the chip actually said, so a protocol that answers normally clears it.
+    let wedged = false;
+    let resets = 0;
+
     const known = this.protocolId;
     // Which protocol the adapter is currently holding, as far as the app knows.
     // Only used to name the bus when the adapter is too old to answer `ATDPN`.
@@ -262,7 +281,20 @@ export class Elm327Client {
 
       onProgress?.(step.label);
 
-      if (step.restart) {
+      // Either the plan asked for a restart here, or the protocol just tried
+      // knocked the controller off the bus. Naming another protocol to a chip
+      // in that state tests nothing — it answers the same error to K-line and
+      // J1850 as it does to CAN — so the reset has to happen before the next
+      // one is tried, not several protocols later once they have all been
+      // spent on a dead controller.
+      const clearing = wedged && resets < MAX_CONTROLLER_RESETS;
+
+      if (step.restart || clearing) {
+        if (clearing && !step.restart) {
+          resets += 1;
+          this.note(step.label, 'the adapter had fallen off the bus, resetting it first');
+        }
+
         if (!(await this.restartAdapter())) {
           silent += 1;
           continue;
@@ -271,6 +303,7 @@ export class Elm327Client {
         // the silence before the restart says anything about what follows it.
         silent = 0;
         armed = null;
+        wedged = false;
       }
 
       if (step.select) {
@@ -302,6 +335,15 @@ export class Elm327Client {
         if (!probe.silent) {
           unanswered = false;
           heard = probe.reason;
+
+          // Whatever the chip last said is the current state of its controller,
+          // so an ordinary refusal here clears a wedge recorded earlier.
+          wedged = probe.wedging;
+
+          // Asking a controller that is off the bus a second time collects the
+          // same error and nothing else. The answer to it is a reset, which the
+          // next step now opens with, so stop spending timeouts on this one.
+          if (wedged) break;
         }
       }
 
@@ -326,13 +368,18 @@ export class Elm327Client {
       if (response.ok && markerOffset(response.hex, '4100') !== -1) {
         this.protocolId = await this.readProtocolId();
         this.note(label, this.protocol ? `answered on ${this.protocol}` : 'answered');
-        return { answered: true, silent: false, reason: '' };
+        return { answered: true, silent: false, wedging: false, reason: '' };
       }
 
       const reason = response.ok ? 'a reply carrying no readings' : response.reason;
       this.note(label, reason);
 
-      return { answered: false, silent: false, reason };
+      return {
+        answered: false,
+        silent: false,
+        wedging: !response.ok && indicatesControllerFault(response.reason),
+        reason,
+      };
     } catch (error) {
       const reason = describeError(error);
       this.note(label, reason);
@@ -342,7 +389,7 @@ export class Elm327Client {
       // while nothing is waiting for it.
       await delay(RESYNC_DELAY_MS);
 
-      return { answered: false, silent: true, reason };
+      return { answered: false, silent: true, wedging: false, reason };
     }
   }
 

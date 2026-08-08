@@ -167,3 +167,17 @@ export const ECU_RESTART_PROBE_MS = 10000;
  * question that has already been answered.
  */
 export const SILENT_PROBES_BEFORE_GIVING_UP = 3;
+
+/**
+ * Resets the sweep may spend clearing a wedged controller, on top of the one
+ * the plan already carries.
+ *
+ * `ATPC` is supposed to release the protocol between attempts, but on the clone
+ * chips most people own it does not bring a CAN controller back from bus-off —
+ * only a reset does. Without a fresh chip, the CAN protocols after the one that
+ * wedged are never really tried: they are asked, and the dead controller
+ * answers for them. Three is one per handover inside the CAN block, which is
+ * where wedging happens; the planned restart covers the move to the older
+ * buses, and past that a car has run out of protocols to be on.
+ */
+export const MAX_CONTROLLER_RESETS = 3;

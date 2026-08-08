@@ -7,6 +7,7 @@ import {
   ADAPTER_INIT_SEQUENCE,
   ADAPTIVE_TIMING,
   FIXED_TIMING,
+  MAX_CONTROLLER_RESETS,
   PROTOCOL_CLOSE,
 } from '../src/features/connection/lib/at-commands';
 import { humanizeBluetoothError } from '../src/features/connection/lib/bluetooth-errors';
@@ -19,7 +20,12 @@ import { parseDtcList } from '../src/lib/obd/dtc/parser';
 import { resolveDtcDetail } from '../src/lib/obd/dtc/resolve';
 import { PID_DEFINITIONS } from '../src/lib/obd/pids';
 import { PROTOCOL_NAMES, PROTOCOL_SWEEP, describeProtocolReply } from '../src/lib/obd/protocols';
-import { extractPayload, markerOffset, parseResponse } from '../src/lib/obd/protocol';
+import {
+  extractPayload,
+  indicatesControllerFault,
+  markerOffset,
+  parseResponse,
+} from '../src/lib/obd/protocol';
 import { acceptsReply, linkReplyHealth, type LinkReplyHealth } from '../src/lib/obd/reply-match';
 import {
   UNITS,
@@ -369,6 +375,52 @@ expectLinkHealth('ATZ', '?', 'neutral');
 
 // A link that cannot initialise or has gone out of step is broken, not healthy.
 for (const raw of ADAPTER_STATUS) expectLinkHealth('0100', raw, 'failure');
+
+section('A wedged controller is the adapter, not the car');
+
+const expectControllerFault = (raw: string, wedging: boolean) => {
+  const response = parseResponse(raw);
+  if (response.ok) return fail(`${JSON.stringify(raw)} should decode as a failure`);
+  if (indicatesControllerFault(response.reason) !== wedging) {
+    fail(`${JSON.stringify(raw)} ("${response.reason}") should be a controller fault: ${wedging}`);
+  }
+};
+
+// The chip reporting that it transmitted and nothing acknowledged it. That
+// drops its controller off the bus, where it stays: every protocol tried
+// afterwards gets the same message back, K-line and J1850 included, which have
+// no CAN in them at all. Only a reset changes that, so the sweep has to know
+// this is the adapter's news and not the car's.
+expectControllerFault('CAN ERROR\r\r', true);
+expectControllerFault('BUS ERROR\r\r', true);
+expectControllerFault('LV RESET\r\r', true);
+
+// A car declining to answer is not the adapter breaking. Resetting the chip on
+// any of these would throw away a sweep that is working and add a reset's worth
+// of waiting to every protocol left in it.
+expectControllerFault('NO DATA\r\r', false);
+expectControllerFault('BUS INIT: ERROR\r\r', false);
+expectControllerFault('UNABLE TO CONNECT\r\r', false);
+expectControllerFault('BUS BUSY\r\r', false);
+expectControllerFault('STOPPED\r\r', false);
+expectControllerFault('BUFFER FULL\r\r', false);
+expectControllerFault('7F0112\r\r', false);
+
+// The sweep clears a wedge by resetting the chip, and there has to be enough
+// budget to do it after each CAN protocol that can wedge — otherwise the last
+// ones are still being tried on a controller that fell off the bus during the
+// first, which is the whole failure this exists to stop. The plan's own restart
+// covers the handover to the older buses, so the CAN block needs one fewer.
+const canProtocols = PROTOCOL_SWEEP.filter((protocol) => protocol.bus === 'CAN').length;
+if (MAX_CONTROLLER_RESETS < canProtocols - 1) {
+  fail(
+    `${MAX_CONTROLLER_RESETS} resets cannot give each of ${canProtocols} CAN protocols a clean chip`,
+  );
+}
+// Each reset costs a full reconfiguration, so they are not free to hand out.
+if (MAX_CONTROLLER_RESETS > canProtocols) {
+  fail(`${MAX_CONTROLLER_RESETS} resets would add a reconfiguration to a sweep that is already long`);
+}
 
 // ── 12. Protocols can be named one at a time ─────────────────────────────────
 section('Protocol sweep is well formed');

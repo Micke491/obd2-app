@@ -8,20 +8,33 @@
  * successful answers from a healthy link, so a car that had told the app
  * exactly what was wrong looked no different from one that never replied.
  */
+/**
+ * The three failures that are the adapter's own, not the car's.
+ *
+ * `CAN ERROR` is the chip saying it transmitted and no other node acknowledged
+ * it, which leaves its controller off the bus; `BUS ERROR` is the same story on
+ * the older wiring; `LV RESET` is the chip having rebooted and lost the
+ * configuration it was given. Named here because the connection sweep has to
+ * recognise them — see `indicatesControllerFault`.
+ */
+const CAN_BUS_ERROR = 'CAN bus error';
+const BUS_ERROR = 'Bus error';
+const ADAPTER_BROWNOUT = 'Adapter browned out';
+
 const ERROR_PHRASES: Array<[RegExp, string | ((match: RegExpExecArray) => string)]> = [
   [/UNABLE\s*TO\s*CONNECT/, 'Adapter could not reach the ECU'],
   // The K-line protocols announce their initialisation handshake and its
   // outcome. `BUS INIT: OK` precedes real data; the error form is how an older
   // non-CAN car reports that it never came up.
   [/BUS\s*INIT[\s.:]*ERROR/, 'The car did not answer the adapter'],
-  [/CAN\s*ERROR/, 'CAN bus error'],
-  [/BUS\s*ERROR/, 'Bus error'],
+  [/CAN\s*ERROR/, CAN_BUS_ERROR],
+  [/BUS\s*ERROR/, BUS_ERROR],
   [/(?:RX|TX)\s*ERROR/, 'Garbled reply'],
   [/DATA\s*ERROR/, 'Data error'],
   [/FB\s*ERROR/, 'Feedback error'],
   [/BUS\s*BUSY/, 'Bus busy'],
   [/BUFFER\s*FULL/, 'Reply too long for the adapter'],
-  [/LV\s*RESET/, 'Adapter browned out'],
+  [/LV\s*RESET/, ADAPTER_BROWNOUT],
   [/LP\s*ALERT/, 'Adapter going to sleep'],
   [/ACT\s*ALERT/, 'Adapter idle'],
   [/STOPPED/, 'Request stopped'],
@@ -68,6 +81,23 @@ export type ObdResponse =
 /** Upper-cases and reduces the adapter's `\r` line breaks to one form. */
 export function normalizeReply(raw: string): string {
   return raw.replace(/[\r\n]+/g, '\n').toUpperCase();
+}
+
+const CONTROLLER_FAULTS: ReadonlySet<string> = new Set([CAN_BUS_ERROR, BUS_ERROR, ADAPTER_BROWNOUT]);
+
+/**
+ * Whether a failure means the adapter itself has stopped being able to talk.
+ *
+ * The distinction decides what to do next, and getting it wrong is expensive
+ * both ways. A controller that has dropped off the bus answers every protocol
+ * tried after it with the same error — including the ones with no CAN in them —
+ * so carrying on down the list tests nothing and ends by blaming the car for a
+ * fault that belongs to the chip. Treating an ordinary `NO DATA` as one of
+ * these would be the opposite mistake: a reset costs a full reconfiguration,
+ * and spending one on a sweep that is working adds that to every step left.
+ */
+export function indicatesControllerFault(reason: string): boolean {
+  return CONTROLLER_FAULTS.has(reason);
 }
 
 /** The adapter-level failure a reply reports, or null when it carries data. */
