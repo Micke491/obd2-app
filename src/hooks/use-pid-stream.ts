@@ -23,14 +23,6 @@ export type PidStreamOptions = {
   queryTimeoutMs?: number;
   /** Pause without unmounting, e.g. while the screen is not focused. */
   enabled?: boolean;
-  /**
-   * Called for every decoded sample, ahead of the paint buffer.
-   *
-   * History belongs to whoever wants it rather than to this hook: the All
-   * sensors screen drives sixty-odd PIDs through here, and keeping a trace of
-   * each one would cost memory on every screen to serve the one that graphs.
-   */
-  onSample?: (pid: string, sample: PidSample) => void;
 };
 
 const DEFAULT_IDLE_GAP_MS = 40;
@@ -63,21 +55,12 @@ export function usePidStream(
   pids: string[],
   options: PidStreamOptions = {},
 ): PidStream {
-  const {
-    idleGapMs = DEFAULT_IDLE_GAP_MS,
-    queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS,
-    enabled = true,
-    onSample,
-  } = options;
+  const { idleGapMs = DEFAULT_IDLE_GAP_MS, queryTimeoutMs = DEFAULT_QUERY_TIMEOUT_MS, enabled = true } = options;
 
   const [stream, setStream] = useState<PidStream>(EMPTY);
   const pidsKey = pids.join(',');
   const orderRef = useRef<string[]>(pids);
   const optionsRef = useRef({ idleGapMs, queryTimeoutMs });
-
-  // Held in a ref for the same reason as the options above: a caller passing a
-  // fresh closure each render must not tear down the loop mid-query.
-  const onSampleRef = useRef(onSample);
 
   useEffect(() => {
     orderRef.current = pidsKey ? pidsKey.split(',') : [];
@@ -86,10 +69,6 @@ export function usePidStream(
   useEffect(() => {
     optionsRef.current = { idleGapMs, queryTimeoutMs };
   }, [idleGapMs, queryTimeoutMs]);
-
-  useEffect(() => {
-    onSampleRef.current = onSample;
-  }, [onSample]);
 
   useEffect(() => {
     if (!client || !enabled) return;
@@ -150,20 +129,13 @@ export function usePidStream(
             const value = definition.decode(data);
             if (value === null || Number.isNaN(value)) continue;
 
-            const sample: PidSample = {
+            buffer[pid] = {
               value,
               text: definition.describe ? definition.describe(data) : null,
               at: Date.now(),
             };
-
-            buffer[pid] = sample;
             bufferedError = null;
             dirty = true;
-
-            // Ahead of the paint buffer deliberately. The buffer keeps only the
-            // newest value per PID, so a recorder fed from the flush would miss
-            // every sample a fast adapter returned between two paints.
-            onSampleRef.current?.(pid, sample);
           } catch (error) {
             if (cancelled) return;
             bufferedError = error instanceof Error ? error.message : 'Read failed';
