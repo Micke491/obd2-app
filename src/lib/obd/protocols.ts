@@ -73,8 +73,11 @@ export const PROTOCOL_SWEEP: ObdProtocol[] = [
   { id: '5', name: PROTOCOL_NAMES['5'], bus: 'K-line', probeTimeoutMs: 6000, attempts: 2 },
   { id: '4', name: PROTOCOL_NAMES['4'], bus: 'K-line', probeTimeoutMs: 7000, attempts: 2 },
   { id: '3', name: PROTOCOL_NAMES['3'], bus: 'K-line', probeTimeoutMs: 7000, attempts: 2 },
-  { id: '1', name: PROTOCOL_NAMES['1'], bus: 'J1850', probeTimeoutMs: 4000, attempts: 1 },
-  { id: '2', name: PROTOCOL_NAMES['2'], bus: 'J1850', probeTimeoutMs: 4000, attempts: 1 },
+  // Six seconds rather than four because four was not enough to reach a verdict:
+  // both J1850 probes ran out of time with the adapter still working, so the two
+  // protocols were reported as tried without either of them ever answering.
+  { id: '1', name: PROTOCOL_NAMES['1'], bus: 'J1850', probeTimeoutMs: 6000, attempts: 1 },
+  { id: '2', name: PROTOCOL_NAMES['2'], bus: 'J1850', probeTimeoutMs: 6000, attempts: 1 },
 ];
 
 /**

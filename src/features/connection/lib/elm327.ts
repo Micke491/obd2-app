@@ -43,8 +43,15 @@ const LOG_PREFIX = '[ELM327]';
  * so a reply is matched to a command purely by arrival order; a late reply that
  * lands after the next write would satisfy the wrong command. Waiting lets it
  * arrive while nothing is pending, where the reader discards it.
+ *
+ * Three hundred milliseconds was not long enough to cover a command that had
+ * just spent two and a half seconds not answering. The proof turned up in a
+ * connection log as `"0100" was answered with "OK"`: `ATPC` timed out, its `OK`
+ * arrived late and satisfied the `ATSP` that followed, and that `ATSP`'s own
+ * `OK` then landed on the first request to the car. A whole protocol went
+ * untested behind a chip that was merely slow.
  */
-const RESYNC_DELAY_MS = 300;
+const RESYNC_DELAY_MS = 900;
 
 /**
  * Consecutive failed commands before the link is treated as broken rather
@@ -398,7 +405,14 @@ export class Elm327Client {
    * an adapter too old to know `ATPC` answers `?` and carries on.
    */
   private async closeProtocol(): Promise<void> {
-    await this.send(PROTOCOL_CLOSE.cmd, PROTOCOL_CLOSE.timeoutMs, true).catch(() => undefined);
+    try {
+      await this.send(PROTOCOL_CLOSE.cmd, PROTOCOL_CLOSE.timeoutMs, true);
+    } catch (error) {
+      // Swallowed, but no longer in silence. An `ATPC` that times out is how the
+      // reply stream gets one message out of step, and leaving it unrecorded is
+      // why that took a log full of identical failures to spot.
+      this.note(PROTOCOL_CLOSE.cmd, describeError(error));
+    }
   }
 
   /**

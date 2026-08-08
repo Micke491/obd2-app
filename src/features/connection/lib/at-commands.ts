@@ -83,6 +83,24 @@ export const ADAPTIVE_TIMING = { cmd: 'ATAT1', timeoutMs: 3000 };
 export const PROTOCOL_QUERY = { cmd: 'ATDPN', timeoutMs: 3000 };
 
 /**
+ * Stops the adapter vetting the keyword bytes a K-line ECU answers its
+ * initialisation with.
+ *
+ * On ISO 9141-2 and ISO 14230-4 the car replies to the wake-up with two keyword
+ * bytes describing what it speaks, and the ELM327 checks them against the pair
+ * the standard prescribes. A car whose bytes do not match is dropped with
+ * `UNABLE TO CONNECT` — the same message it gives for a car that said nothing
+ * at all, which is why the two are impossible to tell apart from outside.
+ *
+ * Plenty of cars answer with something else. The PSA group is the notorious
+ * case and a Xsara Picasso is squarely in it: the ECU is talking, on the right
+ * bus, at the right baud rate, and the adapter throws the session away over the
+ * contents of two bytes it did not need to enforce. Turning the check off is
+ * what a workshop tool does, and it costs a compliant car nothing.
+ */
+export const KEYWORD_CHECK_OFF = 'ATKW0';
+
+/**
  * Adapter configuration. `ATE0` stops the command being echoed back into every
  * reply and `ATS0` removes the spaces between hex bytes; both simplify parsing
  * but the app tolerates either setting failing.
@@ -109,6 +127,7 @@ export const ADAPTER_INIT_SEQUENCE: InitStep[] = [
   { cmd: 'ATL0', label: 'Disabling linefeeds', timeoutMs: 3000 },
   { cmd: 'ATS0', label: 'Disabling spaces', timeoutMs: 3000 },
   { cmd: 'ATH0', label: 'Disabling headers', timeoutMs: 3000 },
+  { cmd: KEYWORD_CHECK_OFF, label: 'Accepting non-standard ECUs', timeoutMs: 3000 },
   { cmd: 'ATAT1', label: 'Enabling adaptive timing', timeoutMs: 3000 },
   { cmd: 'ATSTFF', label: 'Extending the reply window', timeoutMs: 3000 },
 ];

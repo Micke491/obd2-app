@@ -7,6 +7,7 @@ import {
   ADAPTER_INIT_SEQUENCE,
   ADAPTIVE_TIMING,
   FIXED_TIMING,
+  KEYWORD_CHECK_OFF,
   MAX_CONTROLLER_RESETS,
   PROTOCOL_CLOSE,
 } from '../src/features/connection/lib/at-commands';
@@ -656,6 +657,29 @@ if (!ADAPTER_INIT_SEQUENCE.some((step) => step.cmd === ADAPTIVE_TIMING.cmd)) {
 if (FIXED_TIMING.cmd !== 'ATAT0') fail(`${FIXED_TIMING.cmd} does not fix the reply window`);
 if (ADAPTIVE_TIMING.cmd !== 'ATAT1') fail(`${ADAPTIVE_TIMING.cmd} does not restore adaptive timing`);
 if (PROTOCOL_CLOSE.cmd !== 'ATPC') fail(`${PROTOCOL_CLOSE.cmd} does not close the open protocol`);
+
+// A K-line ECU answers the wake-up with two keyword bytes, and an adapter left
+// to vet them drops any car whose pair is not the one the standard prescribes —
+// reporting UNABLE TO CONNECT, the same thing it says about a car that never
+// answered at all. PSA cars are the notorious case. The check has to be off
+// before any protocol is tried, or the sweep rules out buses the car speaks.
+const keywordStep = ADAPTER_INIT_SEQUENCE.findIndex((step) => step.cmd === KEYWORD_CHECK_OFF);
+if (keywordStep === -1) {
+  fail('nothing relaxes keyword checking, so a non-standard K-line ECU is dropped');
+}
+const protocolArmed = ADAPTER_INIT_SEQUENCE.findIndex((step) => step.cmd.startsWith('ATSP'));
+if (protocolArmed !== -1 && keywordStep > protocolArmed) {
+  fail('keyword checking is relaxed after a protocol is already armed');
+}
+
+// Every protocol has to be given long enough to reach a verdict. Both J1850
+// probes used to run out of time with the adapter still working, which reports
+// a protocol as tried when nothing was learned about it either way.
+for (const protocol of PROTOCOL_SWEEP) {
+  if (protocol.probeTimeoutMs < 5000 && protocol.bus !== 'CAN') {
+    fail(`${protocol.name} gets ${protocol.probeTimeoutMs}ms, too little to bring the bus up`);
+  }
+}
 
 // ── 17. A car that will not answer is told which fault to go and fix ─────────
 section('Unreachable cars are diagnosed, not just reported');
