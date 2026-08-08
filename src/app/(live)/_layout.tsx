@@ -29,6 +29,7 @@ export default function LiveLayout() {
     >
       <Stack.Screen name="dashboard" options={{ headerShown: false }} />
       <Stack.Screen name="live" options={{ headerShown: false }} />
+      <Stack.Screen name="graph" options={{ headerShown: false }} />
       <Stack.Screen name="sensors" options={{ headerShown: false }} />
       <Stack.Screen name="codes" options={{ headerShown: false }} />
       <Stack.Screen name="freeze-frame" options={{ title: 'Freeze frame' }} />

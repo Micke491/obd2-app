@@ -55,6 +55,14 @@ export function HubScreen() {
         badge: connected ? { text: `${settings.pinnedPids.length} pinned`, tone: 'muted' } : null,
       },
       {
+        icon: 'chart-timeline-variant',
+        title: 'Graph',
+        hint: 'Watch related readings move together, and export what you recorded',
+        onPress: () => router.push('/graph'),
+        disabled: !connected,
+        badge: null,
+      },
+      {
         icon: 'format-list-bulleted-type',
         title: 'All sensors',
         hint: 'Everything this car reports, grouped and searchable',
