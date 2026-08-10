@@ -36,6 +36,18 @@ import {
   sweepTargets,
 } from '../src/lib/obd/uds/addressing';
 import {
+  KWP_DTC_REQUEST,
+  SYSTEM_NAME_REQUEST,
+  dtcCountRequest,
+  dtcListRequest,
+  nrcAction,
+  parseDtcCount,
+  parseDtcGroups,
+  parseKwpGroups,
+  parseSystemName,
+  parseUdsReply,
+} from '../src/lib/obd/uds/services';
+import {
   UNITS,
   UNIT_PRESETS,
   convertRange,
@@ -874,19 +886,6 @@ if (!unknown.includes('never answered')) fail(`the fallback lost its meaning: ${
 if (!describeUnreachableCar('CAN bus error', null).includes('(last: CAN bus error)')) {
   fail('what the adapter last said must survive into the message');
 }
-
-import {
-  KWP_DTC_REQUEST,
-  SYSTEM_NAME_REQUEST,
-  dtcCountRequest,
-  dtcListRequest,
-  nrcAction,
-  parseDtcCount,
-  parseDtcGroups,
-  parseKwpGroups,
-  parseSystemName,
-  parseUdsReply,
-} from '../src/lib/obd/uds/services';
 
 // ── 19. A module's answer is read, including its refusals ────────────────────
 section('UDS replies');
