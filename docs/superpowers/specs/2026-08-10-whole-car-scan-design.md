@@ -101,7 +101,6 @@ abort and adapter loss. The restore values are the ones
 
 | Command | Why | Restored to |
 |---|---|---|
-| `ATH1` | Headers on, so each reply carries the responder's own CAN ID | `ATH0` |
 | `ATCF700` | Receive filter (11-bit only) | `ATAR` |
 | `ATCM700` | Receive mask (11-bit only) | `ATAR` |
 | `ATST19` | ~102 ms reply window (`0x19` × 4.096 ms); most addresses are silent | `ATSTFF` |
@@ -109,6 +108,36 @@ abort and adapter loss. The restore values are the ones
 
 AT parameters are hexadecimal, so `ATST19` is 25 × 4.096 ms. Commands are
 written without spaces, matching `ADAPTER_INIT_SEQUENCE`.
+
+### Headers stay off
+
+An earlier draft of this design turned headers on (`ATH1`) so each reply would
+carry its responder's CAN ID. That would have broken every request in the sweep.
+
+`acceptsReply` pairs a reply with the command waiting for it by checking that the
+reply opens with the expected response mode — `59` for a `19` request. It refuses
+to search for a two-character marker anywhere later in the frame, deliberately,
+because `43` appears inside the ordinary mode 01 answer `414300` and accepting
+that as a stored-code list is how a healthy car grows a fault. With headers on
+the frame reads `7E85901FF010002`, which opens with the header and not with
+`59`, so every reply would be discarded as belonging to another command and every
+probe would time out.
+
+Measured against the real matcher, headers off works for the whole feature
+already, with no change to `reply-match.ts`:
+
+| Reply | `acceptsReply` |
+|---|---|
+| `5901FF010002` (positive) | accepted |
+| `7F1911` (negative) | accepted |
+| `NO DATA` (silent address) | accepted |
+| `62F1974142530000` (`22F197`) | accepted |
+| `5801C03508` (KWP `18`) | accepted |
+| `7E85901FF010002` (headers on) | **refused** |
+
+Nothing is lost. A module is identified by the address the app asked, which is
+what a targeted re-read needs; the responder's own ID was only ever going to be
+decoration.
 
 The filter is the piece that makes this work without brand data. An ELM327
 accepts a frame when `(id & mask) == (filter & mask)`, so mask `0x700` with
@@ -146,6 +175,31 @@ modules exist and how many faults each holds before fetching a single code.
 | `7F 19 <other>` | Module present, not answering now — record as present, count unknown |
 | `7F 19 78` | Response pending — wait one further reply window, then read again |
 | Silence | Nothing at that address |
+
+### Replies are parsed raw, not through `parseResponse`
+
+A negative response is the sweep's most valuable signal — `7F 19 11` proves a
+module is there and tells us it speaks KWP rather than UDS. But `parseResponse`
+folds every negative response into `{ ok: false, reason: 'The car does not
+support this service' }`, which throws the NRC byte away and reports the module's
+answer as a failure.
+
+So the scan calls `client.sendCommand()` and parses the raw string with its own
+parser in `services.ts`. `client.query()` is not used. Nothing in `protocol.ts`
+changes — mode 03 keeps the behaviour it has, which is correct for mode 03.
+
+### Trouble reporting is suspended for the sweep
+
+`Elm327Client` reports the link as broken after `TROUBLE_THRESHOLD` (4)
+consecutive failed commands, and the connection provider responds by restarting
+the link. A sweep is hundreds of probes at unanswered addresses, so a run of four
+timeouts is normal rather than evidence of anything.
+
+Silence measured as `NO DATA` is already safe — `linkReplyHealth` returns
+`neutral` for it on a `19` request — but a genuine timeout is not. The client
+gains `suspendTroubleReporting(boolean)`; the scan provider sets it for the
+duration of a sweep and clears it in the same `finally` that restores the link
+settings.
 
 Candidate addresses:
 
@@ -277,8 +331,7 @@ type StoredModuleMap = {
   protocolId: string;
   discoveredAt: string;      // ISO date
   modules: {
-    requestId: string;       // "7E0"
-    responseId: string;      // "7E8", as it actually answered
+    requestId: string;       // "7E0" — the address asked, which is all a re-read needs
     part: Part;
     name: string | null;     // from 22F197, null when it did not answer
     lastSeenAt: string;
