@@ -137,6 +137,15 @@ export class Elm327Client {
   }
 
   /**
+   * The `ATSP` id behind `protocol`'s name (e.g. `"6"`), for code that has to
+   * reason about which bus this is -- such as whether it can be swept for
+   * modules -- rather than display it to a driver.
+   */
+  get protocolNumber(): string | null {
+    return this.protocolId;
+  }
+
+  /**
    * What the last connection attempt did, step by step.
    *
    * A car that still will not answer is otherwise a single sentence with

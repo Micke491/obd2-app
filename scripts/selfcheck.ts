@@ -62,6 +62,7 @@ import {
   mergeAfterVerify,
   type ModuleMap,
 } from '../src/features/scan/lib/module-map';
+import { MAX_CONSECUTIVE_ADAPTER_THROWS, adapterLikelyDead } from '../src/features/scan/lib/run-scan';
 import {
   UNITS,
   UNIT_PRESETS,
@@ -1211,6 +1212,36 @@ if (!trouble(true, true)) fail('an adapter fault must still count during a sweep
 if (countsAsLinkTrouble({ recovering: true, suspended: false, fromReply: true })) {
   fail('nothing counts while the link is already restarting');
 }
+
+// ── 25. A dead adapter is not the same as an empty bus ───────────────────────
+section('Adapter failure during a sweep');
+
+// `tsx` does not type-check (see section 24's note above), so a missing
+// export would otherwise arrive here as `undefined` and pass every
+// comparison silently. Assert its shape before trusting it numerically.
+if (typeof MAX_CONSECUTIVE_ADAPTER_THROWS !== 'number') {
+  fail('MAX_CONSECUTIVE_ADAPTER_THROWS is not exported from run-scan as a number');
+}
+if (MAX_CONSECUTIVE_ADAPTER_THROWS !== 6) {
+  fail(`MAX_CONSECUTIVE_ADAPTER_THROWS is ${MAX_CONSECUTIVE_ADAPTER_THROWS}, expected 6`);
+}
+
+// An empty address answers NO DATA and resolves normally, which is what most
+// of a sweep looks like -- a run of that must never trip this on its own.
+if (adapterLikelyDead(0)) fail('a fresh sweep must not start out looking like a dead adapter');
+if (adapterLikelyDead(MAX_CONSECUTIVE_ADAPTER_THROWS - 1)) {
+  fail('one short of the threshold must not yet call the adapter dead');
+}
+// Only a command that gets no response at all -- a real rejection -- can ever
+// reach the threshold; reaching it is what ends the sweep early.
+if (!adapterLikelyDead(MAX_CONSECUTIVE_ADAPTER_THROWS)) {
+  fail('reaching the threshold should call the adapter dead');
+}
+if (!adapterLikelyDead(MAX_CONSECUTIVE_ADAPTER_THROWS + 1)) {
+  fail('past the threshold should still call the adapter dead');
+}
+
+console.log('  a run of thrown commands, not of silence, is what calls a sweep off early');
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');
