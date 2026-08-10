@@ -15,6 +15,7 @@ import { humanizeBluetoothError } from '../src/features/connection/lib/bluetooth
 import { IDLE_STATE, stateAfterAdapterDropped } from '../src/features/connection/lib/connection-state';
 import { describeUnreachableCar, parsePortVoltage } from '../src/features/connection/lib/connection-report';
 import { buildHandshakePlan, worstCaseDuration } from '../src/features/connection/lib/handshake-plan';
+import { buildScanPlan, estimateSeconds } from '../src/features/scan/lib/scan-plan';
 import { AUTHORED, AUTHORED_CODES } from '../src/lib/obd/dtc/authored';
 import { CATALOG_SOURCE_ENTRY_COUNT, DTC_CATALOG } from '../src/lib/obd/dtc/catalog';
 import { isValidCode } from '../src/lib/obd/dtc/derive/parse';
@@ -1057,6 +1058,40 @@ if (classifyModule({ name: null, codes: ['B1234'], requestId: '7E0' }) !== 'body
 }
 
 console.log(`  ${PART_ORDER.length} parts, classified by name then codes then address`);
+
+// ── 22. A scan does only what was asked of it ────────────────────────────────
+section('Scan plans');
+
+// Engine only is the path the app has always taken, and it must stay untouched
+// so a K-line car still works exactly as it does today.
+if (buildScanPlan({ kind: 'engine' }, 'can11').length !== 0) {
+  fail('an engine-only scan should add no module steps at all');
+}
+
+const whole = buildScanPlan({ kind: 'whole' }, 'can11');
+if (whole.length !== 255) fail(`a whole-car plan has ${whole.length} steps, expected 255`);
+if (whole.some((step) => step.kind !== 'discover')) fail('a whole-car plan should be all discovery');
+if (whole[0].requestId !== '7E0') fail('a whole-car plan should open at the engine');
+
+// Picking parts skips discovery entirely: the addresses are already known, so
+// this is two requests each rather than a sweep. That saving is the whole
+// reason to have done the sweep once.
+const picked = buildScanPlan({ kind: 'parts', requestIds: ['7E0', '760'] }, 'can11');
+if (picked.some((step) => step.kind === 'discover')) fail('a picked-parts scan must not sweep');
+if (picked.length !== 2) fail(`a two-part scan has ${picked.length} steps`);
+if (picked.map((step) => step.requestId).join(',') !== '7E0,760') fail('picked parts came out reordered');
+
+// A picked address that is not a real sweep target is dropped rather than sent.
+const bogus = buildScanPlan({ kind: 'parts', requestIds: ['7E0', 'ZZZ'] }, 'can11');
+if (bogus.length !== 1) fail('an address outside the diagnostic band was not dropped');
+
+// The estimate is what the scope screen puts in front of somebody deciding
+// whether to wait, so it has to be in the right order of magnitude.
+const sweepSeconds = estimateSeconds(whole);
+if (sweepSeconds < 20 || sweepSeconds > 90) fail(`a full sweep is estimated at ${sweepSeconds}s`);
+if (estimateSeconds(picked) > 5) fail(`two parts estimated at ${estimateSeconds(picked)}s`);
+
+console.log(`  full sweep ${whole.length} steps, about ${sweepSeconds}s`);
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');
