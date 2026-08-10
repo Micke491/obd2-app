@@ -52,6 +52,12 @@ import {
 import { classifyModule } from '../src/lib/obd/uds/classify';
 import { PART_LABELS, PART_ORDER } from '../src/lib/obd/uds/parts';
 import {
+  groupByPart,
+  mapAppliesTo,
+  mergeAfterVerify,
+  type ModuleMap,
+} from '../src/features/scan/lib/module-map';
+import {
   UNITS,
   UNIT_PRESETS,
   convertRange,
@@ -1092,6 +1098,69 @@ if (sweepSeconds < 20 || sweepSeconds > 90) fail(`a full sweep is estimated at $
 if (estimateSeconds(picked) > 5) fail(`two parts estimated at ${estimateSeconds(picked)}s`);
 
 console.log(`  full sweep ${whole.length} steps, about ${sweepSeconds}s`);
+
+// ── 23. What the car is made of survives, carefully ──────────────────────────
+section('Module map');
+
+const moduleData = (requestId: string, part: 'engine' | 'brakes' | 'restraints') => ({
+  requestId,
+  part,
+  name: null,
+  faultCount: 0,
+  stale: false,
+  lastSeenAt: '2026-08-01T10:00:00.000Z',
+});
+
+const saved: ModuleMap = {
+  version: 1,
+  vin: 'WAUZZZ8K9FA123456',
+  protocolId: '6',
+  discoveredAt: '2026-08-01T10:00:00.000Z',
+  modules: [moduleData('7E0', 'engine'), moduleData('760', 'brakes'), moduleData('740', 'restraints')],
+};
+
+// A module that answers is confirmed and its date moves forward.
+const now = '2026-08-10T09:00:00.000Z';
+const verified = mergeAfterVerify(saved, ['7E0', '760'], now);
+if (verified.modules.length !== 3) fail('re-verifying dropped a module');
+
+const stillThere = verified.modules.find((entry) => entry.requestId === '7E0');
+if (stillThere?.stale) fail('a module that answered was marked stale');
+if (stillThere?.lastSeenAt !== now) fail('a module that answered kept its old date');
+
+// A module that stays quiet is marked, not deleted. A module that is asleep is
+// not a module that has been removed, and deleting it would silently shrink the
+// picker with no way for anyone to notice.
+const quiet = verified.modules.find((entry) => entry.requestId === '740');
+if (!quiet) {
+  fail('a silent module was deleted instead of marked');
+} else {
+  if (!quiet.stale) fail('a silent module should be marked stale');
+  if (quiet.lastSeenAt !== '2026-08-01T10:00:00.000Z') fail('a silent module had its date moved');
+}
+
+// A stale module that answers again is well again.
+const returned = mergeAfterVerify(verified, ['740'], '2026-08-11T09:00:00.000Z');
+if (returned.modules.find((entry) => entry.requestId === '740')?.stale) {
+  fail('a module that came back is still marked stale');
+}
+
+// Applying another car's map would offer addresses this car does not have.
+if (!mapAppliesTo(saved, 'WAUZZZ8K9FA123456', '6')) fail('a map should apply to its own car');
+if (mapAppliesTo(saved, 'WVWZZZ1KZAW123456', '6')) fail('a map was applied to a different VIN');
+if (mapAppliesTo(saved, null, '6')) fail('a map was applied to a car with no readable VIN');
+// The addresses only mean anything on the bus they were found on.
+if (mapAppliesTo(saved, 'WAUZZZ8K9FA123456', '7')) fail('an 11-bit map was applied to a 29-bit bus');
+if (mapAppliesTo(null, 'WAUZZZ8K9FA123456', '6')) fail('a missing map applied to something');
+
+// Results group in a fixed order so the list does not reshuffle between scans.
+const grouped = groupByPart(saved.modules);
+if (grouped.map((entry) => entry.part).join(',') !== 'engine,brakes,restraints') {
+  fail(`grouped as ${grouped.map((entry) => entry.part)}`);
+}
+if (grouped.some((entry) => entry.modules.length === 0)) fail('an empty part group was emitted');
+
+console.log('  maps merge, go stale rather than vanish, and stay on their own car');
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');
