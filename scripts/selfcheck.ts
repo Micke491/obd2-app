@@ -35,6 +35,7 @@ import {
   sweepLinkSettings,
   sweepTargets,
 } from '../src/lib/obd/uds/addressing';
+import { decodeKwpFault, decodeUdsFault, faultLabel } from '../src/lib/obd/uds/faults';
 import {
   KWP_DTC_REQUEST,
   SYSTEM_NAME_REQUEST,
@@ -952,6 +953,50 @@ if (kwp.kind === 'positive') {
 }
 
 console.log('  positive, negative, silent and unusable replies all told apart');
+
+// ── 20. A four-byte fault says more than mode 03 can ─────────────────────────
+section('Module faults');
+
+// 0x40 0x35 is C0035 in exactly the encoding mode 03 uses, so the code the
+// catalog already explains falls straight out. 0x11 is the failure type,
+// 0x08 is the status byte with confirmedDTC set.
+const wheel = decodeUdsFault([0x40, 0x35, 0x11, 0x08]);
+if (!wheel) {
+  fail('a well-formed fault failed to decode');
+} else {
+  if (wheel.code !== 'C0035') fail(`decoded as ${wheel.code}, expected C0035`);
+  if (wheel.failureType !== 0x11) fail('the failure type byte was lost');
+  if (!/short/i.test(wheel.failureTypeLabel ?? '')) fail(`0x11 labelled "${wheel.failureTypeLabel}"`);
+  if (faultLabel(wheel) !== 'C0035-11') fail(`labelled ${faultLabel(wheel)}`);
+
+  // The status byte is the thing mode 03 cannot express: whether the fault is
+  // happening now or was stored on a previous drive.
+  if (wheel.status.failingNow) fail('bit 0 clear means it is not failing right now');
+  if (!wheel.status.confirmed) fail('bit 3 set means the fault is confirmed');
+}
+
+const live = decodeUdsFault([0x40, 0x35, 0x11, 0x09]);
+if (!live?.status.failingNow) fail('bit 0 set means the fault is present now');
+
+// An unknown failure type is shown as its hex value, not guessed at.
+const odd = decodeUdsFault([0x40, 0x35, 0xd7, 0x08]);
+if (odd?.failureTypeLabel !== '0xD7') fail(`an unknown failure type gave "${odd?.failureTypeLabel}"`);
+
+// KWP faults are three bytes and carry no failure type, so the label has no
+// suffix rather than a made-up one.
+const older = decodeKwpFault([0x40, 0x35, 0x08]);
+if (!older) {
+  fail('a KWP fault failed to decode');
+} else {
+  if (older.code !== 'C0035') fail(`KWP fault decoded as ${older.code}`);
+  if (faultLabel(older) !== 'C0035') fail(`a KWP fault was labelled ${faultLabel(older)}`);
+}
+
+// Padding must not become a fault, the same way it does not in mode 03.
+if (decodeUdsFault([0x00, 0x00, 0x00, 0x00]) !== null) fail('padding decoded as a fault');
+if (decodeUdsFault([0x40, 0x35]) !== null) fail('a truncated fault decoded');
+
+console.log('  UDS and KWP faults decode, with status and failure type');
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');
