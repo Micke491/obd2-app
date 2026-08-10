@@ -200,3 +200,10 @@ export const SILENT_PROBES_BEFORE_GIVING_UP = 3;
  * buses, and past that a car has run out of protocols to be on.
  */
 export const MAX_CONTROLLER_RESETS = 3;
+
+/**
+ * Consecutive failed commands before the link is treated as broken rather
+ * than merely slow. Several in a row means the vehicle session was lost —
+ * usually after a brownout that also erased the adapter's configuration.
+ */
+export const TROUBLE_THRESHOLD = 4;

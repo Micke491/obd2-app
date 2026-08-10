@@ -10,6 +10,7 @@ import {
   KEYWORD_CHECK_OFF,
   MAX_CONTROLLER_RESETS,
   PROTOCOL_CLOSE,
+  TROUBLE_THRESHOLD,
 } from '../src/features/connection/lib/at-commands';
 import { humanizeBluetoothError } from '../src/features/connection/lib/bluetooth-errors';
 import { IDLE_STATE, stateAfterAdapterDropped } from '../src/features/connection/lib/connection-state';
@@ -1161,6 +1162,27 @@ if (grouped.map((entry) => entry.part).join(',') !== 'engine,brakes,restraints')
 if (grouped.some((entry) => entry.modules.length === 0)) fail('an empty part group was emitted');
 
 console.log('  maps merge, go stale rather than vanish, and stay on their own car');
+
+// ── 24. A sweep is not a broken link ─────────────────────────────────────────
+section('Trouble reporting during a sweep');
+
+// Four unanswered commands is how the client decides a link has died. A sweep
+// walks 255 addresses with nothing behind most of them, so that count is
+// reached routinely and means nothing.
+if (TROUBLE_THRESHOLD > 8) fail(`a threshold of ${TROUBLE_THRESHOLD} is not a link failure signal`);
+
+// NO DATA on a UDS request is already neutral, which is what keeps an ordinary
+// silent address from counting at all.
+if (linkReplyHealth('1901AF', 'NO DATA') !== 'neutral') {
+  fail('a silent address must not count against the link');
+}
+// A real adapter failure during a sweep still has to count, or a chip that has
+// fallen off the bus would be swept for another forty seconds.
+if (linkReplyHealth('1901AF', 'CAN ERROR') !== 'failure') {
+  fail('a wedged controller must still be reported during a sweep');
+}
+
+console.log('  silence is not failure; adapter faults still are');
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');

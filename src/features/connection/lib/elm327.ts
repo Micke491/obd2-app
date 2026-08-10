@@ -32,6 +32,7 @@ import {
   PROTOCOL_RESET,
   PROTOCOL_SELECT_TIMEOUT_MS,
   SILENT_PROBES_BEFORE_GIVING_UP,
+  TROUBLE_THRESHOLD,
   type InitStep,
 } from './at-commands';
 import { buildHandshakePlan } from './handshake-plan';
@@ -52,13 +53,6 @@ const LOG_PREFIX = '[ELM327]';
  * untested behind a chip that was merely slow.
  */
 const RESYNC_DELAY_MS = 900;
-
-/**
- * Consecutive failed commands before the link is treated as broken rather
- * than merely slow. Several in a row means the vehicle session was lost —
- * usually after a brownout that also erased the adapter's configuration.
- */
-const TROUBLE_THRESHOLD = 4;
 
 /**
  * Lines kept from the connection attempt. Enough to hold a full protocol sweep
@@ -119,6 +113,7 @@ export class Elm327Client {
   private recovering = false;
   private consecutiveFailures = 0;
   private troubleReported = false;
+  private troubleSuspended = false;
   private troubleHandler: (() => void) | null = null;
   private protocolId: string | null = null;
   private trace: string[] = [];
@@ -202,6 +197,25 @@ export class Elm327Client {
    */
   onTrouble(handler: (() => void) | null): void {
     this.troubleHandler = handler;
+  }
+
+  /**
+   * Stops the link being declared broken while a whole-car sweep runs.
+   *
+   * The sweep knocks on hundreds of addresses with nothing behind most of them,
+   * so a run of unanswered commands is the expected shape of a working scan
+   * rather than evidence of anything. Left on, the fourth one would tear the
+   * link down and restart it in the middle of the scan.
+   *
+   * Adapter faults are unaffected: they are reported through the reply itself,
+   * not through this count.
+   */
+  setTroubleSuspended(suspended: boolean): void {
+    this.troubleSuspended = suspended;
+    if (suspended) {
+      this.consecutiveFailures = 0;
+      this.troubleReported = false;
+    }
   }
 
   /**
@@ -636,7 +650,7 @@ export class Elm327Client {
   }
 
   private noteFailure(): void {
-    if (this.recovering) return;
+    if (this.recovering || this.troubleSuspended) return;
 
     this.consecutiveFailures += 1;
 
