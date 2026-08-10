@@ -875,6 +875,85 @@ if (!describeUnreachableCar('CAN bus error', null).includes('(last: CAN bus erro
   fail('what the adapter last said must survive into the message');
 }
 
+import {
+  KWP_DTC_REQUEST,
+  SYSTEM_NAME_REQUEST,
+  dtcCountRequest,
+  dtcListRequest,
+  nrcAction,
+  parseDtcCount,
+  parseDtcGroups,
+  parseKwpGroups,
+  parseSystemName,
+  parseUdsReply,
+} from '../src/lib/obd/uds/services';
+
+// ── 19. A module's answer is read, including its refusals ────────────────────
+section('UDS replies');
+
+if (dtcCountRequest() !== '1901AF') fail(`dtcCountRequest gave ${dtcCountRequest()}`);
+if (dtcListRequest() !== '1902AF') fail(`dtcListRequest gave ${dtcListRequest()}`);
+if (dtcCountRequest('08') !== '190108') fail('the fallback mask is not applied');
+if (SYSTEM_NAME_REQUEST !== '22F197') fail('the system name DID is wrong');
+if (KWP_DTC_REQUEST !== '1800FF00') fail('the KWP request is wrong');
+
+// A positive answer: two faults stored.
+const counted = parseUdsReply('5901FF010002', 0x19);
+if (counted.kind !== 'positive') fail(`a positive reply read as ${counted.kind}`);
+if (counted.kind === 'positive' && parseDtcCount(counted.body) !== 2) {
+  fail(`fault count came out as ${parseDtcCount(counted.body)}`);
+}
+
+// A refusal is the sweep's most valuable signal: it proves a module is there.
+// parseResponse throws the NRC away, which is why scan code never uses it.
+const refused = parseUdsReply('7F1911', 0x19);
+if (refused.kind !== 'negative') fail(`a refusal read as ${refused.kind}`);
+if (refused.kind === 'negative' && refused.nrc !== 0x11) fail('the NRC byte was lost');
+
+// A refusal naming a different service answers a different question.
+if (parseUdsReply('7F2211', 0x19).kind !== 'unusable') fail('a refusal for service 22 answered a 19');
+
+// Silence means nothing is at that address, which is not a failure.
+if (parseUdsReply('NO DATA', 0x19).kind !== 'silent') fail('NO DATA should read as silence');
+if (parseUdsReply('', 0x19).kind !== 'silent') fail('an empty reply should read as silence');
+// The adapter's own trouble is neither a module nor silence.
+if (parseUdsReply('CAN ERROR', 0x19).kind !== 'unusable') fail('CAN ERROR should be unusable');
+
+if (nrcAction(0x11) !== 'kwp-fallback') fail('serviceNotSupported should fall back to KWP');
+if (nrcAction(0x12) !== 'retry-mask') fail('subFunctionNotSupported should retry the mask');
+if (nrcAction(0x31) !== 'retry-mask') fail('requestOutOfRange should retry the mask');
+if (nrcAction(0x78) !== 'pending') fail('responsePending should wait');
+if (nrcAction(0x22) !== 'present-unreadable') fail('conditionsNotCorrect means present but not readable');
+
+// 59 02 <availability mask> then four bytes per fault.
+const listed = parseUdsReply('5902FF40351108403612042F', 0x19);
+if (listed.kind !== 'positive') fail('a fault list read as something else');
+if (listed.kind === 'positive') {
+  const groups = parseDtcGroups(listed.body);
+  if (groups.length !== 2) fail(`expected 2 faults, got ${groups.length}`);
+  if (groups[0].join(',') !== '64,53,17,8') fail(`first fault decoded as ${groups[0]}`);
+}
+
+// 62 F1 97 then ASCII. Padding bytes are dropped.
+const named = parseUdsReply('62F1974142530000', 0x22);
+if (named.kind !== 'positive' || parseSystemName(named.body) !== 'ABS') {
+  fail(`the module's own name came out as ${named.kind === 'positive' ? parseSystemName(named.body) : named.kind}`);
+}
+// A module that answers the DID with nothing readable is unnamed, not blank.
+const empty = parseUdsReply('62F1970000', 0x22);
+if (empty.kind === 'positive' && parseSystemName(empty.body) !== null) fail('padding read as a name');
+
+// KWP: 58 <count> then three bytes per fault.
+const kwp = parseUdsReply('5801403508', 0x18);
+if (kwp.kind !== 'positive') fail('a KWP fault list read as something else');
+if (kwp.kind === 'positive') {
+  const groups = parseKwpGroups(kwp.body);
+  if (groups.length !== 1) fail(`expected 1 KWP fault, got ${groups.length}`);
+  if (groups[0].join(',') !== '64,53,8') fail(`KWP fault decoded as ${groups[0]}`);
+}
+
+console.log('  positive, negative, silent and unusable replies all told apart');
+
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');
 if (failures === 0) {
