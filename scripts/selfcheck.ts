@@ -48,6 +48,8 @@ import {
   parseSystemName,
   parseUdsReply,
 } from '../src/lib/obd/uds/services';
+import { classifyModule } from '../src/lib/obd/uds/classify';
+import { PART_LABELS, PART_ORDER } from '../src/lib/obd/uds/parts';
 import {
   UNITS,
   UNIT_PRESETS,
@@ -997,6 +999,52 @@ if (decodeUdsFault([0x00, 0x00, 0x00, 0x00]) !== null) fail('padding decoded as 
 if (decodeUdsFault([0x40, 0x35]) !== null) fail('a truncated fault decoded');
 
 console.log('  UDS and KWP faults decode, with status and failure type');
+
+// ── 21. A discovered module is placed without brand knowledge ────────────────
+section('Module classification');
+
+for (const part of PART_ORDER) {
+  if (!PART_LABELS[part]) fail(`part "${part}" has no label`);
+}
+if (new Set(PART_ORDER).size !== PART_ORDER.length) fail('a part is listed twice');
+
+// 1. The module's own name, when it answered 22F197.
+const classifyByName = (name: string) => classifyModule({ name, codes: [], requestId: '7A0' });
+if (classifyByName('ABS') !== 'brakes') fail('ABS should be brakes');
+if (classifyByName('ESP') !== 'brakes') fail('ESP should be brakes');
+if (classifyByName('Airbag') !== 'restraints') fail('Airbag should be restraints');
+if (classifyByName('SRS') !== 'restraints') fail('SRS should be restraints');
+if (classifyByName('EPS') !== 'steering') fail('EPS should be steering');
+if (classifyByName('Getriebe') !== 'transmission') fail('Getriebe should be transmission');
+if (classifyByName('Kombi') !== 'instruments') fail('Kombi should be instruments');
+if (classifyByName('Gateway') !== 'network') fail('Gateway should be network');
+
+// 2. Failing that, the letters of the codes it stores. A module keeps codes in
+//    its own domain, so this is available exactly when it matters.
+const byCodes = (codes: string[]) => classifyModule({ name: null, codes, requestId: '7A0' });
+if (byCodes(['C0035']) !== 'brakes') fail('a C code is chassis');
+if (byCodes(['B1234']) !== 'body') fail('a B code is body');
+if (byCodes(['U0155']) !== 'network') fail('a U code is network');
+if (byCodes(['P0301']) !== 'engine') fail('a P code is powertrain');
+
+// 3. Failing that, the legislated addresses, which are powertrain by definition.
+if (classifyModule({ name: null, codes: [], requestId: '7E0' }) !== 'engine') fail('0x7E0 is the engine');
+if (classifyModule({ name: null, codes: [], requestId: '7E1' }) !== 'transmission') {
+  fail('0x7E1 is the transmission by near-universal convention');
+}
+
+// 4. And otherwise it stays unplaced rather than being guessed at.
+if (classifyModule({ name: null, codes: [], requestId: '7A0' }) !== 'other') {
+  fail('an unnamed module with no codes must not be placed');
+}
+
+// The name outranks the codes: a module that told us what it is beats an
+// inference from what happens to be stored in it.
+if (classifyModule({ name: 'ABS', codes: ['U0155'], requestId: '7E0' }) !== 'brakes') {
+  fail('classification precedence is wrong');
+}
+
+console.log(`  ${PART_ORDER.length} parts, classified by name then codes then address`);
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');
