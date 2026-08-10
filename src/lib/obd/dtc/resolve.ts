@@ -47,7 +47,7 @@ export function resolveDtcDetail(input: string): DtcDetail {
   if (!parsed) return unparseable(code);
 
   const manufacturerSpecific = !parsed.generic;
-  const catalogTitle = DTC_CATALOG[code];
+  const entry = DTC_CATALOG[code];
 
   const authored = AUTHORED[code];
   if (authored) {
@@ -68,15 +68,20 @@ export function resolveDtcDetail(input: string): DtcDetail {
       ...draft,
       code,
       // The catalog carries the real SAE wording, which beats a generated title.
-      title: catalogTitle ?? draft.title,
-      confidence: catalogTitle ? 'catalog' : 'derived',
+      title: entry?.title ?? draft.title,
+      // A rule's meaning names the cylinder or sensor it worked out, so it is
+      // kept; an urgency written for this one code still outranks the rule's.
+      severity: entry?.risk?.severity ?? draft.severity,
+      drive: entry?.risk?.drive ?? draft.drive,
+      driveNote: entry?.risk?.note ?? draft.driveNote,
+      confidence: entry ? 'catalog' : 'derived',
       manufacturerSpecific,
     };
   }
 
-  if (catalogTitle) {
+  if (entry) {
     return {
-      ...buildCatalogDraft(parsed, catalogTitle),
+      ...buildCatalogDraft(parsed, entry),
       code,
       confidence: 'catalog',
       manufacturerSpecific,

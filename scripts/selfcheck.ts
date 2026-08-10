@@ -16,7 +16,7 @@ import { IDLE_STATE, stateAfterAdapterDropped } from '../src/features/connection
 import { describeUnreachableCar, parsePortVoltage } from '../src/features/connection/lib/connection-report';
 import { buildHandshakePlan, worstCaseDuration } from '../src/features/connection/lib/handshake-plan';
 import { AUTHORED, AUTHORED_CODES } from '../src/lib/obd/dtc/authored';
-import { DTC_CATALOG } from '../src/lib/obd/dtc/catalog';
+import { CATALOG_SOURCE_ENTRY_COUNT, DTC_CATALOG } from '../src/lib/obd/dtc/catalog';
 import { isValidCode } from '../src/lib/obd/dtc/derive/parse';
 import { parseDtcList } from '../src/lib/obd/dtc/parser';
 import { resolveDtcDetail } from '../src/lib/obd/dtc/resolve';
@@ -132,6 +132,49 @@ for (const code of AUTHORED_CODES) {
 }
 console.log(`  ${AUTHORED_CODES.length} authored entries`);
 
+// ── 5b. Every catalog code says what it actually means ───────────────────────
+section('Catalog briefs');
+
+const catalogCodes = Object.keys(DTC_CATALOG);
+
+// The catalog is assembled from range files by spreading. A code defined in two
+// of them would be silently won by whichever spread came last, taking the other
+// description with it and never showing up as a failure anywhere else.
+if (catalogCodes.length !== CATALOG_SOURCE_ENTRY_COUNT) {
+  fail(
+    `${CATALOG_SOURCE_ENTRY_COUNT - catalogCodes.length} code(s) are defined in more than one catalog file`,
+  );
+}
+
+const seenBriefs = new Map<string, string>();
+for (const code of catalogCodes) {
+  const entry = DTC_CATALOG[code];
+  if (!isValidCode(code)) fail(`${code} is not a valid DTC`);
+  if (!entry.title) fail(`${code}: no title`);
+
+  // The brief has one job: say what this code means without being an essay.
+  // Too short and it is another restatement of the title; too long and it is
+  // the "what it means" section, which already exists below it.
+  if (entry.brief.length < 60) fail(`${code}: brief is too thin (${entry.brief.length} chars)`);
+  if (entry.brief.length > 300) fail(`${code}: brief is an essay (${entry.brief.length} chars)`);
+  if (!/[.!]$/.test(entry.brief.trim())) fail(`${code}: brief does not end in a sentence`);
+
+  // A brief that repeats the SAE wording explains nothing — that wording is
+  // already on screen as the heading, and is the reason people search the code.
+  if (entry.brief.toLowerCase().includes(entry.title.toLowerCase())) {
+    fail(`${code}: brief just restates the title`);
+  }
+
+  // Two codes sharing a brief means at least one of them is not being told
+  // apart from its neighbour, which is the whole value of having them listed.
+  const twin = seenBriefs.get(entry.brief);
+  if (twin) fail(`${code} and ${twin} share the same brief`);
+  seenBriefs.set(entry.brief, code);
+
+  if (entry.risk && entry.risk.note.length < 40) fail(`${code}: risk override has no justification`);
+}
+console.log(`  ${catalogCodes.length} catalog entries, ${Object.values(DTC_CATALOG).filter((e) => e.risk).length} with an urgency override`);
+
 // ── 6. No code is ever just a number ─────────────────────────────────────────
 section('Every trouble code resolves to a real explanation');
 
@@ -184,13 +227,15 @@ expectLocus('P035A', 'Cylinder 10');
 expectLocus('P0671', 'Cylinder 1');
 expectLocus('P0130', 'Bank 1 · Sensor 1');
 expectLocus('P0141', 'Bank 1 · Sensor 2');
+expectLocus('P0147', 'Bank 1 · Sensor 3');
 expectLocus('P0155', 'Bank 2 · Sensor 1');
 expectLocus('P0161', 'Bank 2 · Sensor 2');
+expectLocus('P0167', 'Bank 2 · Sensor 3');
 
 // The SAE wording wins the title where the catalog has one; the derived module
 // name has to show up in the body text instead.
 const u0100 = resolveDtcDetail('U0100');
-if (u0100.title !== DTC_CATALOG.U0100) fail(`U0100 should use the SAE title, got "${u0100.title}"`);
+if (u0100.title !== DTC_CATALOG.U0100.title) fail(`U0100 should use the SAE title, got "${u0100.title}"`);
 if (!u0100.meaning.includes('engine control module')) fail('U0100 meaning does not name the module');
 
 const u0121 = resolveDtcDetail('U0121');
@@ -206,6 +251,48 @@ if (resolveDtcDetail('P0300').confidence !== 'authored') fail('P0300 should be a
 if (resolveDtcDetail('P0420').confidence !== 'authored') fail('P0420 should be authored');
 // P0301 has no authored entry but does have a rule and an SAE title.
 if (resolveDtcDetail('P0301').confidence !== 'catalog') fail('P0301 should resolve from the catalog tier');
+
+// ── 7b. A named code explains itself, not its neighbourhood ──────────────────
+section('Named codes read as the code, not the family');
+
+// This is the regression the catalog briefs exist to stop. A code with no rule
+// of its own used to be described by pasting the SAE title in front of a
+// paragraph about the whole hundred-block, which named the right corner of the
+// car and never the fault — so the screen was read and the code was then looked
+// up online anyway.
+for (const code of ['P0108', 'P0116', 'P0452', 'P0741', 'P2015']) {
+  const detail = resolveDtcDetail(code);
+  if (detail.meaning !== DTC_CATALOG[code].brief) {
+    fail(`${code} is not being explained by its own catalog line`);
+  }
+  if (/Codes in this range/.test(detail.meaning)) fail(`${code} still falls back to the family paragraph`);
+}
+
+// The family's urgency is a fair guess for most of a block and dangerous for a
+// few. These are the few: emissions codes default to "safe to drive", and a
+// dead cooling fan is not, while a P05xx default of "moderate" is not what
+// somebody with no oil pressure needs to read.
+const expectUrgency = (code: string, severity: string, drive: string) => {
+  const detail = resolveDtcDetail(code);
+  if (detail.severity !== severity || detail.drive !== drive) {
+    fail(`${code} resolved as ${detail.severity}/${detail.drive}, expected ${severity}/${drive}`);
+  }
+};
+
+expectUrgency('P0480', 'serious', 'drive-with-care'); // cooling fan, in the emissions block
+expectUrgency('P0524', 'critical', 'stop-now'); // oil pressure too low
+expectUrgency('P0217', 'critical', 'stop-now'); // engine has actually overheated
+expectUrgency('P0094', 'serious', 'limp-to-shop'); // fuel leaking near a hot engine
+expectUrgency('P0563', 'serious', 'limp-to-shop'); // charging system over-voltage
+expectUrgency('P0452', 'minor', 'safe-to-drive'); // vapour system fault really is minor
+
+// P2xxx is its own block, not a continuation of P0xxx. Reading it through the
+// P0 table filed every particulate filter code under "fuel and air metering".
+if (resolveDtcDetail('P2002').system !== 'emissions') {
+  fail(`P2002 is a particulate filter code, resolved as ${resolveDtcDetail('P2002').system}`);
+}
+if (resolveDtcDetail('P2463').system !== 'emissions') fail('P2463 should be an emissions code');
+if (resolveDtcDetail('P0171').system !== 'fuel-air') fail('P0171 should still be a fuel and air code');
 
 // A nonsense string must not throw.
 const junk = resolveDtcDetail('hello');

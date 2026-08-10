@@ -41,7 +41,7 @@ export function AboutScreen() {
           </FieldRow>
           <FieldRow label="Trouble codes">
             <AppText variant="bodyStrong">
-              {AUTHORED_CODES.length} written in full, {Object.keys(DTC_CATALOG).length} named
+              {AUTHORED_CODES.length} written in full, {Object.keys(DTC_CATALOG).length} explained
             </AppText>
           </FieldRow>
         </Section>

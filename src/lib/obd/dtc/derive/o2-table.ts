@@ -8,7 +8,8 @@ export type O2Fault =
 
 export type O2Position = {
   bank: 1 | 2;
-  sensor: 1 | 2;
+  /** Counted from the engine out: 1 is before the catalyst, 2 and 3 after it. */
+  sensor: 1 | 2 | 3;
   fault: O2Fault;
 };
 
@@ -40,7 +41,7 @@ const FAULT_ORDER: O2Fault[] = [
  * block, so the table is built by counting the way the standard counts and the
  * hex-only slots (P013A–P013F and friends) are deliberately left out.
  */
-function block(start: number, bank: 1 | 2, sensor: 1 | 2): Record<string, O2Position> {
+function block(start: number, bank: 1 | 2, sensor: 1 | 2 | 3): Record<string, O2Position> {
   const out: Record<string, O2Position> = {};
   FAULT_ORDER.forEach((fault, index) => {
     const code = `P${String(start + index).padStart(4, '0')}`;
@@ -52,8 +53,10 @@ function block(start: number, bank: 1 | 2, sensor: 1 | 2): Record<string, O2Posi
 export const O2_POSITIONS: Record<string, O2Position> = {
   ...block(130, 1, 1),
   ...block(136, 1, 2),
+  ...block(142, 1, 3),
   ...block(150, 2, 1),
   ...block(156, 2, 2),
+  ...block(162, 2, 3),
 };
 
 export function describeO2Position(position: O2Position): string {

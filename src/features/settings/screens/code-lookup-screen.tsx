@@ -7,7 +7,7 @@ import { Card } from '@/components/card';
 import { EmptyState } from '@/components/empty-state';
 import { Screen } from '@/components/screen';
 import { AppText } from '@/components/text';
-import { AUTHORED_CODES, DTC_CATALOG, isValidCode, normaliseCode } from '@/lib/obd/dtc';
+import { AUTHORED_CODES, CATALOG_CODES, DTC_CATALOG, isValidCode, normaliseCode } from '@/lib/obd/dtc';
 import { useTheme, useThemedStyles, type Theme } from '@/theme';
 
 const MAX_SUGGESTIONS = 25;
@@ -31,7 +31,7 @@ export function CodeLookupScreen() {
   const suggestions = useMemo(() => {
     if (typed.length < 2) return AUTHORED_CODES.slice(0, MAX_SUGGESTIONS);
     const needle = typed.toLowerCase();
-    const pool = new Set([...AUTHORED_CODES, ...Object.keys(DTC_CATALOG)]);
+    const pool = new Set([...AUTHORED_CODES, ...CATALOG_CODES]);
     return [...pool]
       .filter((code) => code.toLowerCase().startsWith(needle))
       .sort()
@@ -71,8 +71,9 @@ export function CodeLookupScreen() {
             <AppText variant="heading" style={styles.exact}>
               {typed}
             </AppText>
+            {/* The brief rather than the SAE title, which is the question. */}
             <AppText variant="caption" tone="muted">
-              {DTC_CATALOG[typed] ?? 'Not in the standard list — you will still get an explanation.'}
+              {DTC_CATALOG[typed]?.brief ?? 'Not in the standard list — you will still get an explanation.'}
             </AppText>
           </Card>
         ) : null}
@@ -101,7 +102,7 @@ export function CodeLookupScreen() {
                   {code}
                 </AppText>
                 <AppText variant="caption" tone="muted" numberOfLines={1} style={styles.rowText}>
-                  {DTC_CATALOG[code] ?? 'Explanation available'}
+                  {DTC_CATALOG[code]?.title ?? 'Explanation available'}
                 </AppText>
                 <MaterialCommunityIcons name="chevron-right" size={18} color={theme.color.inkFaint} />
               </Pressable>

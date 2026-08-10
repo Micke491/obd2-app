@@ -46,7 +46,7 @@ export function describeDtc(code: string): Dtc {
   return {
     code,
     category: CATEGORIES[letter] ?? 'powertrain',
-    description: DTC_CATALOG[code] ?? null,
+    description: DTC_CATALOG[code]?.title ?? null,
     // Second digit 1 or 2 marks a manufacturer-defined code in the SAE scheme.
     manufacturerSpecific: secondDigit === '1' || secondDigit === '2',
   };

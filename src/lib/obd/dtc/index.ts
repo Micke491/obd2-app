@@ -1,6 +1,6 @@
 export { resolveDtcDetail } from './resolve';
 export { AUTHORED_CODES } from './authored';
-export { DTC_CATALOG } from './catalog';
+export { CATALOG_CODES, DTC_CATALOG } from './catalog';
 /** On-the-wire parsing. Kept separate from the explanation layer on purpose. */
 export { decodeDtcBytes, describeDtc, parseDtcList, type Dtc, type DtcCategory } from './parser';
 export { isValidCode, normaliseCode, parseCode, type CodeLetter, type ParsedCode } from './derive/parse';
@@ -10,6 +10,7 @@ export {
   SEVERITY_LABELS,
   SEVERITY_SUMMARY,
   SYSTEM_LABELS,
+  type CatalogEntry,
   type DriveAdvice,
   type DtcCause,
   type DtcConfidence,

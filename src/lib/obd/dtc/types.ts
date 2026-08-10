@@ -27,6 +27,25 @@ export type DtcSystem =
 export type DtcCause = { text: string; likelihood: 'common' | 'possible' | 'rare' };
 export type DtcFix = { text: string; where: 'diy-easy' | 'diy-moderate' | 'shop' };
 
+/** All three together or none, so urgency and its justification cannot drift apart. */
+export type CatalogRisk = { severity: DtcSeverity; drive: DriveAdvice; note: string };
+
+export type CatalogEntry = {
+  /** SAE wording, so it matches the garage invoice and every other scan tool. */
+  title: string;
+  /**
+   * What this one code means, in one or two sentences of plain words.
+   *
+   * The SAE title alone is the reason people end up searching the code online:
+   * "manifold absolute pressure circuit range/performance" names a part and a
+   * verdict but never says what the car measured or why it objected. This says
+   * that, and says only that — it is a caption, not an article.
+   */
+  brief: string;
+  /** Set only where the code family's default urgency would be wrong. */
+  risk?: CatalogRisk;
+};
+
 export type DtcDetail = {
   code: string;
   /** Short name, SAE wording where there is one. */

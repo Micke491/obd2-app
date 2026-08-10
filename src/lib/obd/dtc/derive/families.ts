@@ -1,4 +1,4 @@
-import type { DerivedDraft, DriveAdvice, DtcSeverity, DtcSystem } from '../types';
+import type { CatalogEntry, DerivedDraft, DriveAdvice, DtcSeverity, DtcSystem } from '../types';
 import type { ParsedCode } from './parse';
 
 type Family = {
@@ -220,6 +220,95 @@ const P_FAMILIES: Record<number, Family> = {
   },
 };
 
+/**
+ * Keyed on the third character of a P2xxx code.
+ *
+ * P2xxx is a separate block with its own layout, not a continuation of P0xxx.
+ * Reading it through the P0 table puts every diesel particulate filter code
+ * under "fuel and air metering", which is both wrong and the sort of wrong that
+ * sends somebody looking at the wrong end of the car.
+ */
+const P2_FAMILIES: Record<number, Family> = {
+  0x0: {
+    area: 'the exhaust aftertreatment and intake control',
+    about:
+      'Codes in this range come from the parts that clean up the exhaust downstream of the engine — the particulate filter, the nitrogen oxide trap — and from the flaps that reshape the intake air.',
+    system: 'emissions',
+    severity: 'moderate',
+    drive: 'drive-with-care',
+    driveNote:
+      'The car usually still drives, but a blocking filter gets worse with short journeys and eventually forces a limp mode.',
+    symptoms: [
+      'Check engine light on',
+      'Reduced power, sometimes only above a certain speed',
+      'On a diesel, a filter warning or a smell of hot exhaust',
+    ],
+  },
+  0x1: {
+    area: 'fuel metering and throttle control',
+    about:
+      'Codes in this range cover the mixture the engine is being fed and the electronic throttle that meters its air — including the pedal sensors the throttle follows.',
+    system: 'fuel-air',
+    severity: 'serious',
+    drive: 'drive-with-care',
+    driveNote:
+      'Throttle faults make cars drop into reduced power without warning, which is worth knowing before pulling out to overtake.',
+    symptoms: POWERTRAIN_SYMPTOMS,
+  },
+  0x2: {
+    area: 'the exhaust sensors and boost control',
+    about:
+      'Codes in this range come from the sensors reading the exhaust — oxygen and nitrogen oxide — and from turbocharger boost control and intake air leaks.',
+    system: 'fuel-air',
+    severity: 'moderate',
+    drive: 'drive-with-care',
+    driveNote:
+      'The engine falls back on estimated values, so it runs but less efficiently, and sustained wrong fuelling harms the catalytic converter.',
+    symptoms: POWERTRAIN_SYMPTOMS,
+  },
+  0x4: {
+    area: 'the emission control systems',
+    about:
+      'Codes in this range come from exhaust gas recirculation, the fuel-vapour system, secondary air injection and the diesel particulate filter.',
+    system: 'emissions',
+    severity: 'minor',
+    drive: 'safe-to-drive',
+    driveNote: 'These rarely change how the car drives, but they will fail an emissions test.',
+    symptoms: [
+      'Check engine light on',
+      'Often no change you can feel',
+      'Fails an emissions test',
+      'On a diesel, more frequent filter regeneration',
+    ],
+  },
+  0x5: {
+    area: 'the charging system and vehicle control inputs',
+    about:
+      'Codes in this range cover charging voltage, the ignition switch, torque requests between modules, and boost actuator position.',
+    system: 'computer',
+    severity: 'serious',
+    drive: 'drive-with-care',
+    driveNote:
+      'A charging fault ends with a flat battery and a car that will not restart, so do not leave it to see whether it clears.',
+    symptoms: [
+      'Battery warning light on',
+      'Dim lights, or electrical features behaving oddly',
+      'Check engine light on',
+    ],
+  },
+  0x6: {
+    area: 'the control modules and their internal checks',
+    about:
+      'Codes in this range are raised by control modules about their own internal state, their timers, and the sensors wired directly to them.',
+    system: 'computer',
+    severity: 'moderate',
+    drive: 'drive-with-care',
+    driveNote:
+      'These are usually reported alongside another fault. Fix whatever else is stored first, then see whether this remains.',
+    symptoms: ['Check engine light on', 'Several unrelated codes appearing together'],
+  },
+};
+
 const P_FALLBACK: Family = {
   area: 'the engine or transmission',
   about:
@@ -316,6 +405,7 @@ const GENERIC_FIXES = [
 function familyFor(code: ParsedCode): Family {
   switch (code.letter) {
     case 'P':
+      if (code.typeDigit === 2) return P2_FAMILIES[code.systemDigit] ?? P_FALLBACK;
       return P_FAMILIES[code.systemDigit] ?? P_FALLBACK;
     case 'C':
       return C_FAMILY;
@@ -376,17 +466,22 @@ export function buildFamilyDraft(code: ParsedCode): DerivedDraft {
   };
 }
 
-/** Used when an SAE title is known but no rule matched — better severity guess. */
-export function buildCatalogDraft(code: ParsedCode, title: string): DerivedDraft {
+/**
+ * Used when the catalog names the code but no rule matched.
+ *
+ * The meaning is the catalog's own line about this one code. It used to be the
+ * SAE title followed by the family paragraph, which described the right corner
+ * of the car and never the fault — the reason somebody would read the screen
+ * and then go and search the code anyway.
+ */
+export function buildCatalogDraft(code: ParsedCode, entry: CatalogEntry): DerivedDraft {
   const family = familyFor(code);
   return {
-    title,
-    meaning:
-      `${title}. ${family.about} The wording above is the standard SAE definition for this code; ` +
-      'what has actually failed still needs testing on the car.',
-    severity: family.severity,
-    drive: family.drive,
-    driveNote: family.driveNote,
+    title: entry.title,
+    meaning: entry.brief,
+    severity: entry.risk?.severity ?? family.severity,
+    drive: entry.risk?.drive ?? family.drive,
+    driveNote: entry.risk?.note ?? family.driveNote,
     symptoms: family.symptoms,
     causes: code.letter === 'U' ? NETWORK_CAUSES : GENERIC_CAUSES,
     fixes: GENERIC_FIXES,
