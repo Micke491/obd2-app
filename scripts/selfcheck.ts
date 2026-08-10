@@ -1166,6 +1166,16 @@ console.log('  maps merge, go stale rather than vanish, and stay on their own ca
 // ── 24. A sweep is not a broken link ─────────────────────────────────────────
 section('Trouble reporting during a sweep');
 
+// `tsx` does not type-check, so a missing export arrives here as
+// `undefined` -- and `undefined > 8` is false, which let this whole section
+// report success with nothing imported. Assert the value positively first.
+if (typeof TROUBLE_THRESHOLD !== 'number') {
+  fail('TROUBLE_THRESHOLD is not exported from at-commands as a number');
+}
+if (TROUBLE_THRESHOLD !== 4) {
+  fail(`TROUBLE_THRESHOLD is ${TROUBLE_THRESHOLD}, expected 4`);
+}
+
 // Four unanswered commands is how the client decides a link has died. A sweep
 // walks 255 addresses with nothing behind most of them, so that count is
 // reached routinely and means nothing.
