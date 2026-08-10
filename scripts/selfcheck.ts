@@ -13,7 +13,11 @@ import {
   TROUBLE_THRESHOLD,
 } from '../src/features/connection/lib/at-commands';
 import { humanizeBluetoothError } from '../src/features/connection/lib/bluetooth-errors';
-import { IDLE_STATE, stateAfterAdapterDropped } from '../src/features/connection/lib/connection-state';
+import {
+  IDLE_STATE,
+  countsAsLinkTrouble,
+  stateAfterAdapterDropped,
+} from '../src/features/connection/lib/connection-state';
 import { describeUnreachableCar, parsePortVoltage } from '../src/features/connection/lib/connection-report';
 import { buildHandshakePlan, worstCaseDuration } from '../src/features/connection/lib/handshake-plan';
 import { buildScanPlan, estimateSeconds } from '../src/features/scan/lib/scan-plan';
@@ -1193,6 +1197,20 @@ if (linkReplyHealth('1901AF', 'CAN ERROR') !== 'failure') {
 }
 
 console.log('  silence is not failure; adapter faults still are');
+
+// A sweep suspends the counter so empty addresses do not read as a dying
+// link -- but a reply saying the adapter itself is broken must still get
+// through, or a controller that fell off the bus is swept over in silence.
+const trouble = (suspended: boolean, fromReply: boolean) =>
+  countsAsLinkTrouble({ recovering: false, suspended, fromReply });
+
+if (!trouble(false, false)) fail('an ordinary timeout should count when nothing is suspended');
+if (!trouble(false, true)) fail('an adapter fault should count when nothing is suspended');
+if (trouble(true, false)) fail("a sweep's routine timeout should not count while suspended");
+if (!trouble(true, true)) fail('an adapter fault must still count during a sweep');
+if (countsAsLinkTrouble({ recovering: true, suspended: false, fromReply: true })) {
+  fail('nothing counts while the link is already restarting');
+}
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');

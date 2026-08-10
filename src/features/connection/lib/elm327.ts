@@ -17,6 +17,7 @@ import { extractPayload } from '@/lib/obd/protocol';
 
 import { humanizeBluetoothError } from './bluetooth-errors';
 import { describeUnreachableCar, parsePortVoltage } from './connection-report';
+import { countsAsLinkTrouble } from './connection-state';
 import {
   ADAPTER_INIT_SEQUENCE,
   ADAPTIVE_TIMING,
@@ -207,8 +208,10 @@ export class Elm327Client {
    * rather than evidence of anything. Left on, the fourth one would tear the
    * link down and restart it in the middle of the scan.
    *
-   * Adapter faults are unaffected: they are reported through the reply itself,
-   * not through this count.
+   * Adapter faults are exempt: a failure classified from the reply's own
+   * content still reports, because a controller that has dropped off the bus
+   * answers every remaining address identically and the sweep is worth
+   * abandoning.
    */
   setTroubleSuspended(suspended: boolean): void {
     this.troubleSuspended = suspended;
@@ -649,8 +652,15 @@ export class Elm327Client {
     entry.reject(reason);
   }
 
-  private noteFailure(): void {
-    if (this.recovering || this.troubleSuspended) return;
+  private noteFailure(fromReply = false): void {
+    // Suspension is for a sweep's routine timeouts at addresses with nothing
+    // behind them. A reply whose content says the adapter itself has stopped
+    // working is never suspended: a controller that has fallen off the bus
+    // answers every remaining address the same way, and a sweep that ignored
+    // that would run to the end and report having found nothing.
+    if (!countsAsLinkTrouble({ recovering: this.recovering, suspended: this.troubleSuspended, fromReply })) {
+      return;
+    }
 
     this.consecutiveFailures += 1;
 
@@ -689,7 +699,7 @@ export class Elm327Client {
       clearTimeout(entry.timer);
       const health = linkReplyHealth(entry.cmd, data);
       if (health === 'failure') {
-        this.noteFailure();
+        this.noteFailure(true);
       } else if (health === 'healthy') {
         this.consecutiveFailures = 0;
         this.troubleReported = false;

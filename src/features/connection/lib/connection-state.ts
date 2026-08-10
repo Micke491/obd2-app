@@ -44,3 +44,20 @@ export function stateAfterAdapterDropped(prev: ObdConnectionState): ObdConnectio
     error: prev.error ?? 'The adapter disconnected. Check it is seated firmly in the OBD port.',
   };
 }
+
+/**
+ * Whether a failed command counts towards declaring the link dead.
+ *
+ * Split out from the client so it can be checked without a Bluetooth radio.
+ * The client owns the state; this decides what the state means.
+ */
+export function countsAsLinkTrouble(state: {
+  recovering: boolean;
+  suspended: boolean;
+  /** Classified from the reply's content rather than from a timeout. */
+  fromReply: boolean;
+}): boolean {
+  if (state.recovering) return false;
+  if (state.suspended && !state.fromReply) return false;
+  return true;
+}
