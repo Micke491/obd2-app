@@ -30,6 +30,12 @@ import {
 } from '../src/lib/obd/protocol';
 import { acceptsReply, linkReplyHealth, type LinkReplyHealth } from '../src/lib/obd/reply-match';
 import {
+  addressingFor,
+  admitsResponse,
+  sweepLinkSettings,
+  sweepTargets,
+} from '../src/lib/obd/uds/addressing';
+import {
   UNITS,
   UNIT_PRESETS,
   convertRange,
@@ -773,6 +779,68 @@ for (const protocol of PROTOCOL_SWEEP) {
     fail(`${protocol.name} gets ${protocol.probeTimeoutMs}ms, too little to bring the bus up`);
   }
 }
+
+// ── 18. Every module gets knocked on, and the filter lets it answer ──────────
+section('Whole-car sweep addressing');
+
+if (addressingFor('6') !== 'can11') fail('protocol 6 is 11-bit CAN');
+if (addressingFor('8') !== 'can11') fail('protocol 8 is 11-bit CAN');
+if (addressingFor('7') !== 'can29') fail('protocol 7 is 29-bit CAN');
+if (addressingFor('9') !== 'can29') fail('protocol 9 is 29-bit CAN');
+// K-line and J1850 cannot be swept, and saying so is the whole point.
+if (addressingFor('3') !== null) fail('ISO 9141-2 is not a CAN bus');
+if (addressingFor(null) !== null) fail('an unknown protocol cannot be swept');
+
+const eleven = sweepTargets('can11');
+if (eleven.length !== 255) fail(`11-bit sweep has ${eleven.length} targets, expected 255`);
+// 0x7DF is the OBD functional broadcast: several modules would answer one
+// request and the reply could not be attributed to any of them.
+if (eleven.some((target) => target.requestId === '7DF')) fail('the sweep includes the broadcast address');
+// The legislated addresses come first so the engine appears in the first second
+// rather than 200 silent probes later.
+if (eleven.slice(0, 8).map((target) => target.requestId).join(',') !== '7E0,7E1,7E2,7E3,7E4,7E5,7E6,7E7') {
+  fail(`the sweep does not open with the legislated addresses: ${eleven.slice(0, 8).map((t) => t.requestId)}`);
+}
+if (eleven.some((target) => target.receiveFilter !== null)) {
+  fail('11-bit targets should rely on the band filter, not a per-address one');
+}
+
+const twentyNine = sweepTargets('can29');
+if (twentyNine.length !== 255) fail(`29-bit sweep has ${twentyNine.length} targets, expected 255`);
+if (twentyNine.some((target) => target.requestId === '18DA33F1')) fail('the 29-bit broadcast is being swept');
+// 29-bit response addressing is standardised, so each target names its own
+// reply address rather than opening a band.
+if (twentyNine[0].requestId !== '18DA00F1' || twentyNine[0].receiveFilter !== '18DAF100') {
+  fail(`29-bit target 0 is ${JSON.stringify(twentyNine[0])}`);
+}
+
+// The filter is what makes this work without brand data: an ELM327 accepts a
+// frame when (id & mask) == (filter & mask), so mask 0x700 with filter 0x700
+// admits every diagnostic responder and no ordinary bus traffic.
+if (!admitsResponse(0x7e8)) fail('0x7E8 is the engine reply and must be admitted');
+if (!admitsResponse(0x700)) fail('0x700 is inside the diagnostic band');
+if (!admitsResponse(0x7ff)) fail('0x7FF is inside the diagnostic band');
+if (admitsResponse(0x6ff)) fail('0x6FF is ordinary bus traffic and must be rejected');
+if (admitsResponse(0x300)) fail('0x300 is ordinary bus traffic and must be rejected');
+
+// A sweep that cannot put the adapter back leaves every later reading filtered.
+for (const addressing of ['can11', 'can29'] as const) {
+  const settings = sweepLinkSettings(addressing);
+  if (settings.length === 0) fail(`${addressing} sets nothing`);
+  for (const setting of settings) {
+    if (!setting.set.startsWith('AT')) fail(`"${setting.set}" is not an AT command`);
+    if (!setting.restore.startsWith('AT')) fail(`"${setting.set}" has no restore command`);
+  }
+  if (settings.some((setting) => setting.set === 'ATH1')) {
+    fail('headers on would make acceptsReply discard every reply in the sweep');
+  }
+}
+// The band filter belongs to 11-bit only; on 29-bit ATCRA overrides it anyway,
+// and having both set is configuration nobody can reason about afterwards.
+const bandFilters = sweepLinkSettings('can29').filter((setting) => /ATC[FM]/.test(setting.set));
+if (bandFilters.length !== 0) fail('29-bit should not set the band filter');
+
+console.log(`  ${eleven.length} addresses per sweep`);
 
 // ── 17. A car that will not answer is told which fault to go and fix ─────────
 section('Unreachable cars are diagnosed, not just reported');
