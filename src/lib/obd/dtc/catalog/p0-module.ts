@@ -1,6 +1,6 @@
 import type { CatalogEntry } from '../types';
 
-import { CHARGING_RISK, FAN_RISK } from './risks';
+import { CHARGING_RISK, COMFORT_RISK, FAN_RISK } from './risks';
 
 /** P0600–P06FF: the engine computer's own health and its output circuits. */
 export const MODULE: Record<string, CatalogEntry> = {
@@ -176,14 +176,17 @@ export const MODULE: Record<string, CatalogEntry> = {
   P0645: {
     title: 'Air conditioning clutch relay control circuit',
     brief: 'The relay that engages the air conditioning compressor is not switching as commanded.',
+    risk: COMFORT_RISK,
   },
   P0646: {
     title: 'Air conditioning clutch relay control circuit low',
     brief: 'The air conditioning clutch relay control wire is shorted to ground.',
+    risk: COMFORT_RISK,
   },
   P0647: {
     title: 'Air conditioning clutch relay control circuit high',
     brief: 'The air conditioning clutch relay circuit is open or shorted to voltage, so the compressor never engages.',
+    risk: COMFORT_RISK,
   },
   P0650: {
     title: 'Malfunction indicator lamp control circuit',

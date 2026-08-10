@@ -285,6 +285,12 @@ expectUrgency('P0217', 'critical', 'stop-now'); // engine has actually overheate
 expectUrgency('P0094', 'serious', 'limp-to-shop'); // fuel leaking near a hot engine
 expectUrgency('P0563', 'serious', 'limp-to-shop'); // charging system over-voltage
 expectUrgency('P0452', 'minor', 'safe-to-drive'); // vapour system fault really is minor
+// The compressor relay is an engine computer output, so it inherited a block
+// default about the engine protecting itself by limiting power. Losing air
+// conditioning is not that, and telling somebody to make short trips only
+// because their cabin is warm is the same failure as the cooling fan, inverted.
+expectUrgency('P0645', 'minor', 'safe-to-drive');
+expectUrgency('P0534', 'minor', 'safe-to-drive');
 
 // P2xxx is its own block, not a continuation of P0xxx. Reading it through the
 // P0 table filed every particulate filter code under "fuel and air metering".

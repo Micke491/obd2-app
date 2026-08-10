@@ -1,6 +1,6 @@
 import type { CatalogEntry } from '../types';
 
-import { CHARGING_RISK, OIL_RISK } from './risks';
+import { CHARGING_RISK, COMFORT_RISK, OIL_RISK } from './risks';
 
 /** P0500–P05FF: road speed, idle control, oil pressure, charging, cruise. */
 export const VEHICLE: Record<string, CatalogEntry> = {
@@ -152,25 +152,30 @@ export const VEHICLE: Record<string, CatalogEntry> = {
     title: 'Air conditioning refrigerant pressure sensor circuit malfunction',
     brief:
       'The air conditioning pressure sensor is not reporting, so the system will not engage the compressor — protecting it from running with no gas.',
+    risk: COMFORT_RISK,
   },
   P0531: {
     title: 'Air conditioning refrigerant pressure sensor range/performance',
     brief: 'The measured refrigerant pressure does not fit the ambient temperature and compressor state.',
+    risk: COMFORT_RISK,
   },
   P0532: {
     title: 'Air conditioning refrigerant pressure sensor circuit low input',
     brief:
       'The refrigerant pressure signal is below its valid range — a short to ground, or a system that has genuinely lost its gas.',
+    risk: COMFORT_RISK,
   },
   P0533: {
     title: 'Air conditioning refrigerant pressure sensor circuit high input',
     brief:
       'The refrigerant pressure signal is above its valid range — an open circuit, or a genuine over-pressure from a blocked condenser.',
+    risk: COMFORT_RISK,
   },
   P0534: {
     title: 'Air conditioning refrigerant charge loss',
     brief:
       'Pressure has fallen far enough that the system considers itself empty. A leak somewhere — the condenser, a hose, or a compressor shaft seal.',
+    risk: COMFORT_RISK,
   },
 
   // ── Intake air heater and exhaust temperature, P0540–P0549 ─────────────

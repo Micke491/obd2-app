@@ -33,6 +33,18 @@ export const TIMING_RISK: CatalogRisk = {
   note: 'Timing that has already slipped can slip further, and on most engines that bends valves. Keep the trip short.',
 };
 
+/**
+ * Air conditioning sits in two blocks whose defaults both overstate it: the
+ * compressor relay is an engine computer output, and the pressure sensor is an
+ * auxiliary input. Neither block's default is written for a fault whose whole
+ * consequence is a warm cabin.
+ */
+export const COMFORT_RISK: CatalogRisk = {
+  severity: 'minor',
+  drive: 'safe-to-drive',
+  note: 'Nothing you steer, stop or drive with is affected. The air conditioning will not work until it is fixed, and on most cars neither will the windscreen demist setting that uses it.',
+};
+
 export const OVERHEAT_RISK: CatalogRisk = {
   severity: 'critical',
   drive: 'stop-now',
