@@ -20,7 +20,7 @@ import {
 } from '../src/features/connection/lib/connection-state';
 import { describeUnreachableCar, parsePortVoltage } from '../src/features/connection/lib/connection-report';
 import { buildHandshakePlan, worstCaseDuration } from '../src/features/connection/lib/handshake-plan';
-import { buildScanPlan, estimateSeconds } from '../src/features/scan/lib/scan-plan';
+import { askedFromResult, buildScanPlan, estimateSeconds } from '../src/features/scan/lib/scan-plan';
 import { AUTHORED, AUTHORED_CODES } from '../src/lib/obd/dtc/authored';
 import { CATALOG_SOURCE_ENTRY_COUNT, DTC_CATALOG } from '../src/lib/obd/dtc/catalog';
 import { isValidCode } from '../src/lib/obd/dtc/derive/parse';
@@ -1312,6 +1312,37 @@ if (JSON.stringify(beforeFold) !== JSON.stringify(frozenBefore)) {
 }
 
 console.log('  found refreshes and re-dates, asked-but-silent goes stale, never-asked is untouched, new modules append');
+
+// ── 27. What a scan "asked" is what it reached, not what it was told ─────────
+section('Asked set from a scan result');
+
+// The exact case that reintroduced finding A through a side door: a `parts`
+// scan for three addresses, stopped after only the first was reached. Using
+// `scope.requestIds` here would hand the other two to `foldScanIntoMap` as
+// "asked", and a module that was never actually probed would be marked
+// stale -- precisely what section 26 forbids.
+const interruptedParts = askedFromResult({ kind: 'parts', requestIds: ['7E0', '760', '740'] }, ['7E0']);
+if (interruptedParts.join(',') !== '7E0') {
+  fail(`an interrupted parts scan asked ${interruptedParts.join(',')}, expected just what it reached`);
+}
+
+// A `parts` scan that ran to completion reaches everything it was told to,
+// so the two should agree -- this is the case that made the bug easy to miss.
+const completedParts = askedFromResult({ kind: 'parts', requestIds: ['7E0', '760'] }, ['7E0', '760']);
+if (completedParts.join(',') !== '7E0,760') fail('a completed parts scan should ask everything it reached');
+
+// A `whole` sweep stopped early must narrow the same way, whatever it was
+// told to sweep -- `whole` carries no request list at all to fall back to.
+const interruptedWhole = askedFromResult({ kind: 'whole' }, ['7E0', '7E1']);
+if (interruptedWhole.join(',') !== '7E0,7E1') fail('a whole scan should ask exactly what it visited');
+
+// `engine` never asks a module at all, regardless of what `visited` says --
+// there is no scan step behind it that could have produced a visit.
+if (askedFromResult({ kind: 'engine' }, ['7E0']).length !== 0) {
+  fail('an engine-only scope should never ask a module address');
+}
+
+console.log('  asked is what a scan reached, never what it was merely told to try');
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');

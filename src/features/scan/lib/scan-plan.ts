@@ -48,6 +48,22 @@ export function buildScanPlan(scope: ScanScope, addressing: CanAddressing): Scan
     .map((target) => ({ kind: 'interrogate' as const, ...target }));
 }
 
+/**
+ * The addresses a completed run can fairly be said to have asked, for
+ * folding its result back into a map.
+ *
+ * Not `scope.requestIds` for a `parts` scan: a scan that stopped early --
+ * `stop()`, or the adapter itself going quiet -- did not actually ask every
+ * address the caller named, only the ones it reached before stopping, and
+ * `visited` is exactly that. It already equals the caller's own target set
+ * once a scan runs to completion, so this holds for every scope without
+ * needing to special-case "did it finish" -- only `engine`, which never asks
+ * a module at all, needs its own case.
+ */
+export function askedFromResult(scope: ScanScope, visited: string[]): string[] {
+  return scope.kind === 'engine' ? [] : visited;
+}
+
 export function estimateSeconds(plan: ScanStep[]): number {
   const seconds = plan.reduce(
     (total, step) => total + (step.kind === 'discover' ? DISCOVER_SECONDS : INTERROGATE_SECONDS),

@@ -8,7 +8,7 @@ import { parseVin } from '@/lib/obd/vehicle-info';
 import { MODULE_MAP_VERSION, foldScanIntoMap, mapAppliesTo, type ModuleMap } from '../lib/module-map';
 import { loadModuleMap, saveModuleMap } from '../lib/module-map-store';
 import { runScan, type ScanProgress } from '../lib/run-scan';
-import { buildScanPlan, type ScanScope } from '../lib/scan-plan';
+import { askedFromResult, buildScanPlan, type ScanScope } from '../lib/scan-plan';
 
 export type VehicleScanValue = {
   /** Null until a whole-car scan or a restored map has run. */
@@ -191,7 +191,7 @@ export function VehicleScanProvider({ children }: { children: ReactNode }) {
         if (clientRef.current !== scanningClient) return;
 
         const now = new Date().toISOString();
-        const asked = scope.kind === 'whole' ? result.visited : scope.kind === 'parts' ? scope.requestIds : [];
+        const asked = askedFromResult(scope, result.visited);
 
         const folded = foldScanIntoMap(baseMap(map, vin, protocolId, now), asked, result.modules, now);
         const nextMap: ModuleMap = scope.kind === 'whole' ? { ...folded, discoveredAt: now } : folded;
