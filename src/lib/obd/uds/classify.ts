@@ -21,7 +21,7 @@ const NAME_PATTERNS: Array<[RegExp, Part]> = [
   [/\b(IPC|KOMBI)\b|CLUSTER|INSTRUMENT|TACHO/i, 'instruments'],
   [/GATEWAY|\bGW\b|DIAGNOSTIC BUS/i, 'network'],
   [/\b(BCM|CEM|SAM)\b|KAROSSERIE|BODY|COMFORT|KOMFORT|KLIMA|CLIMATE|HVAC/i, 'body'],
-  [/\b(ECM|PCM|EDC|MED|SIMOS|DDE|DME)\b|MOTOR|ENGINE/i, 'engine'],
+  [/\b(ECM|PCM|EDC|MED|SIMOS|DDE|DME)\b|ENGINE/i, 'engine'],
 ];
 
 const CODE_LETTERS: Record<string, Part> = {

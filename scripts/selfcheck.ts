@@ -1044,6 +1044,18 @@ if (classifyModule({ name: 'ABS', codes: ['U0155'], requestId: '7E0' }) !== 'bra
   fail('classification precedence is wrong');
 }
 
+// "Motor" is any electric motor in German, so an unbounded match filed
+// seat, window and wiper actuators under the engine.
+for (const comfort of ['Sitzmotor links', 'Fensterheber-Motor', 'Wischermotor']) {
+  if (classifyByName(comfort) === 'engine') fail(`${comfort} was filed as the engine`);
+}
+if (classifyByName('ECM') !== 'engine') fail('an engine ECU acronym should still be the engine');
+
+// The codes tier has to beat the address tier, not merely beat nothing.
+if (classifyModule({ name: null, codes: ['B1234'], requestId: '7E0' }) !== 'body') {
+  fail('a stored body code should outrank the legislated engine address');
+}
+
 console.log(`  ${PART_ORDER.length} parts, classified by name then codes then address`);
 
 // ── Result ──────────────────────────────────────────────────────────────────
