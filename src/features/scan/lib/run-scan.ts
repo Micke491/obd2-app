@@ -51,6 +51,13 @@ export type ScanProgress = { done: number; total: number; found: number };
 export type ScanResult = {
   modules: DiscoveredModule[];
   faults: Record<string, ModuleFault[]>;
+  /**
+   * Every address this run actually reached, in the order it reached them.
+   * Not the same as the plan when the scan stopped early -- that is the
+   * point: an address the sweep never got to was never asked, and folding it
+   * back into a map must not treat it as having gone quiet.
+   */
+  visited: string[];
   /** True when the caller stopped it, so partial results can be labelled. */
   aborted: boolean;
   /**
@@ -87,6 +94,7 @@ export async function runScan(
   const settings = sweepLinkSettings(addressing);
   const modules: DiscoveredModule[] = [];
   const faults: Record<string, ModuleFault[]> = {};
+  const visited: string[] = [];
   const tracker: ThrowTracker = { consecutive: 0 };
   let aborted = false;
   let adapterFailed = false;
@@ -103,6 +111,7 @@ export async function runScan(
         break;
       }
 
+      visited.push(step.requestId);
       const found = await visit(client, step, tracker);
       if (found) {
         modules.push(found.module);
@@ -133,7 +142,7 @@ export async function runScan(
     if (!restored) await client.recover().catch(() => undefined);
   }
 
-  return { modules, faults, aborted, adapterFailed };
+  return { modules, faults, visited, aborted, adapterFailed };
 }
 
 async function visit(

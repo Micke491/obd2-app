@@ -44,6 +44,38 @@ export function mergeAfterVerify(map: ModuleMap, answered: string[], now: string
   };
 }
 
+/**
+ * Folds a completed scan back into the map.
+ *
+ * Three cases, and the middle one is the point: a module that was asked and
+ * stayed quiet is marked stale rather than dropped, because a module that is
+ * asleep is not a module that has been removed. A module that was never asked
+ * -- because the sweep was stopped early, or because this scan only covered
+ * some parts -- is left exactly as it was, since nothing was learned about it.
+ */
+export function foldScanIntoMap(
+  map: ModuleMap,
+  asked: string[],
+  found: DiscoveredModule[],
+  now: string,
+): ModuleMap {
+  const askedIds = new Set(asked.map((requestId) => requestId.toUpperCase()));
+  const foundById = new Map(found.map((entry) => [entry.requestId.toUpperCase(), entry]));
+
+  const modules = map.modules.map((entry) => {
+    const id = entry.requestId.toUpperCase();
+    const match = foundById.get(id);
+    if (match) return { ...match, stale: false, lastSeenAt: now };
+    if (askedIds.has(id)) return { ...entry, stale: true };
+    return { ...entry };
+  });
+
+  const known = new Set(map.modules.map((entry) => entry.requestId.toUpperCase()));
+  const additions = found.filter((entry) => !known.has(entry.requestId.toUpperCase()));
+
+  return { ...map, modules: [...modules, ...additions] };
+}
+
 /** Whether a saved map describes the car currently plugged in. */
 export function mapAppliesTo(
   map: ModuleMap | null,

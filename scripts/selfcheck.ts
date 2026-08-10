@@ -57,9 +57,11 @@ import {
 import { classifyModule } from '../src/lib/obd/uds/classify';
 import { PART_LABELS, PART_ORDER } from '../src/lib/obd/uds/parts';
 import {
+  foldScanIntoMap,
   groupByPart,
   mapAppliesTo,
   mergeAfterVerify,
+  type DiscoveredModule,
   type ModuleMap,
 } from '../src/features/scan/lib/module-map';
 import { MAX_CONSECUTIVE_ADAPTER_THROWS, adapterLikelyDead } from '../src/features/scan/lib/run-scan';
@@ -1242,6 +1244,74 @@ if (!adapterLikelyDead(MAX_CONSECUTIVE_ADAPTER_THROWS + 1)) {
 }
 
 console.log('  a run of thrown commands, not of silence, is what calls a sweep off early');
+
+// ── 26. Folding a scan back never deletes what it didn't reach ───────────────
+section('Folding a scan into the map');
+
+const beforeFold: ModuleMap = {
+  version: 1,
+  vin: 'WAUZZZ8K9FA123456',
+  protocolId: '6',
+  discoveredAt: '2026-08-01T10:00:00.000Z',
+  modules: [
+    { requestId: '7E0', part: 'engine', name: null, faultCount: 2, stale: false, lastSeenAt: '2026-08-01T10:00:00.000Z' },
+    { requestId: '760', part: 'brakes', name: 'Old name', faultCount: 1, stale: false, lastSeenAt: '2026-08-01T10:00:00.000Z' },
+    { requestId: '740', part: 'restraints', name: null, faultCount: 0, stale: false, lastSeenAt: '2026-08-01T10:00:00.000Z' },
+  ],
+};
+// A snapshot taken before folding, to prove the input is never mutated -- a
+// React provider holds this exact object in state.
+const frozenBefore = JSON.parse(JSON.stringify(beforeFold));
+
+const refreshed: DiscoveredModule = {
+  requestId: '7E0',
+  part: 'engine',
+  name: 'Engine control module',
+  faultCount: 0,
+  stale: false,
+  // Deliberately an old-looking date, to prove the fold uses its own `now`
+  // rather than whatever the found entry happened to carry.
+  lastSeenAt: '2000-01-01T00:00:00.000Z',
+};
+const newcomer: DiscoveredModule = {
+  requestId: '7A0',
+  part: 'other',
+  name: null,
+  faultCount: 0,
+  stale: false,
+  lastSeenAt: '2000-01-01T00:00:00.000Z',
+};
+
+const foldNow = '2026-08-10T09:00:00.000Z';
+// This scan asked 7E0 (found) and 760 (asked, came back silent); 740 was
+// never in its plan at all -- the shape of a `parts` scan, or a `whole` sweep
+// that was stopped before reaching every address.
+const folded = foldScanIntoMap(beforeFold, ['7E0', '760'], [refreshed, newcomer], foldNow);
+
+const foldedEngine = folded.modules.find((entry) => entry.requestId === '7E0');
+if (foldedEngine?.name !== 'Engine control module') fail('a found module was not refreshed with fresh data');
+if (foldedEngine?.stale) fail('a found module should not stay stale');
+if (foldedEngine?.lastSeenAt !== foldNow) fail('a found module should be dated to the fold, not its own visit');
+
+const foldedBrakes = folded.modules.find((entry) => entry.requestId === '760');
+if (!foldedBrakes?.stale) fail('an asked-but-silent module should go stale');
+if (foldedBrakes?.lastSeenAt !== '2026-08-01T10:00:00.000Z') {
+  fail('an asked-but-silent module should keep its old date, not be re-dated');
+}
+if (foldedBrakes?.name !== 'Old name') fail('an asked-but-silent module should keep its old data, not be blanked');
+
+const foldedRestraints = folded.modules.find((entry) => entry.requestId === '740');
+if (foldedRestraints?.stale) fail('a module never asked this scan must not be marked stale');
+if (foldedRestraints?.lastSeenAt !== '2026-08-01T10:00:00.000Z') fail('a module never asked must keep its date');
+
+if (!folded.modules.some((entry) => entry.requestId === '7A0')) fail('a newly found module was not appended');
+if (folded.modules.length !== 4) fail(`folding produced ${folded.modules.length} modules, expected 4`);
+
+if (JSON.stringify(beforeFold) !== JSON.stringify(frozenBefore)) {
+  fail('foldScanIntoMap mutated its input map');
+}
+
+console.log('  found refreshes and re-dates, asked-but-silent goes stale, never-asked is untouched, new modules append');
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');

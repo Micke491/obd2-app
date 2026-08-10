@@ -5,16 +5,10 @@ import { addressingFor, type CanAddressing } from '@/lib/obd/uds/addressing';
 import type { ModuleFault } from '@/lib/obd/uds/faults';
 import { parseVin } from '@/lib/obd/vehicle-info';
 
-import {
-  MODULE_MAP_VERSION,
-  mapAppliesTo,
-  mergeAfterVerify,
-  type DiscoveredModule,
-  type ModuleMap,
-} from '../lib/module-map';
+import { MODULE_MAP_VERSION, foldScanIntoMap, mapAppliesTo, type ModuleMap } from '../lib/module-map';
 import { loadModuleMap, saveModuleMap } from '../lib/module-map-store';
 import { runScan, type ScanProgress } from '../lib/run-scan';
-import { buildScanPlan, type ScanScope, type ScanStep } from '../lib/scan-plan';
+import { buildScanPlan, type ScanScope } from '../lib/scan-plan';
 
 export type VehicleScanValue = {
   /** Null until a whole-car scan or a restored map has run. */
@@ -30,45 +24,33 @@ export type VehicleScanValue = {
 
 export const VehicleScanContext = createContext<VehicleScanValue | null>(null);
 
-/**
- * Folds a fresh set of found modules into what is already known, replacing
- * only the entries this scan actually touched. Everything else in the map —
- * modules a `parts` scan did not ask about — is left exactly as it was.
- */
-function mergeIntoMap(
-  existing: ModuleMap | null,
-  found: DiscoveredModule[],
-  vin: string | null,
-  protocolId: string | null,
-  now: string,
-): ModuleMap {
-  const base: ModuleMap = existing ?? {
-    version: MODULE_MAP_VERSION,
-    vin: vin ?? '',
-    protocolId: protocolId ?? '',
-    discoveredAt: now,
-    modules: [],
-  };
-
-  const foundIds = new Set(found.map((entry) => entry.requestId.toUpperCase()));
-  const kept = base.modules.filter((entry) => !foundIds.has(entry.requestId.toUpperCase()));
-
-  return { ...base, modules: [...kept, ...found] };
+/** The map to fold a scan into: what is already known, or an empty one to start from. */
+function baseMap(existing: ModuleMap | null, vin: string | null, protocolId: string | null, now: string): ModuleMap {
+  return (
+    existing ?? {
+      version: MODULE_MAP_VERSION,
+      vin: vin ?? '',
+      protocolId: protocolId ?? '',
+      discoveredAt: now,
+      modules: [],
+    }
+  );
 }
 
 /**
- * Folds fresh fault lists into what is already known. Every address the plan
- * actually asked is cleared first, so a module that answered clean this time
- * does not keep showing a fault list from before; addresses outside the plan
- * are untouched.
+ * Folds fresh fault lists into what is already known. Every address this scan
+ * actually reached is cleared first, so a module that answered clean this
+ * time does not keep showing a fault list from before; an address the scan
+ * never reached -- because it stopped early, or only covered some parts --
+ * keeps whatever it already had.
  */
 function mergeFaults(
   prev: Record<string, ModuleFault[]>,
-  plan: ScanStep[],
+  asked: string[],
   found: Record<string, ModuleFault[]>,
 ): Record<string, ModuleFault[]> {
   const next = { ...prev };
-  for (const step of plan) delete next[step.requestId];
+  for (const requestId of asked) delete next[requestId];
   return { ...next, ...found };
 }
 
@@ -81,6 +63,17 @@ export function VehicleScanProvider({ children }: { children: ReactNode }) {
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Kept in sync on every render (not via an effect, which would lag a render
+  // behind) so an async call that started against an earlier `client` can
+  // tell, after an `await`, whether the connection has since moved on.
+  const clientRef = useRef(client);
+  clientRef.current = client;
+
+  // Synchronous and checked-then-set before any `runScan` call, so two scans
+  // -- the connect-time auto-verify and a manual `scan()` -- can never both
+  // be mid-sweep at once. `busy` is React state and updates asynchronously;
+  // two calls landing in the same tick would both still see it `false`.
+  const scanLockRef = useRef(false);
   // Flipped by `stop()`, read by every `shouldStop` handed to `runScan`.
   const stopRef = useRef(false);
   // The current car's VIN, read once per connection. Not exposed: it exists
@@ -106,7 +99,14 @@ export function VehicleScanProvider({ children }: { children: ReactNode }) {
     const currentAddressing = addressingFor(client.protocolNumber);
     if (!currentAddressing) return;
 
+    // A manual scan is already running (vanishingly unlikely right after a
+    // fresh connection, but the lock is unconditional) -- leave it alone
+    // rather than starting a second sweep alongside it.
+    if (scanLockRef.current) return;
+
     let cancelled = false;
+    const verifyingClient = client;
+    scanLockRef.current = true;
 
     // Busy for the whole flow, not just the verify scan at the end of it: the
     // VIN read is adapter traffic too, and a manual `scan()` starting while it
@@ -122,24 +122,26 @@ export function VehicleScanProvider({ children }: { children: ReactNode }) {
         } catch {
           vin = null;
         }
-        if (cancelled) return;
+        if (cancelled || clientRef.current !== verifyingClient) return;
         vinRef.current = vin;
 
         const stored = await loadModuleMap(vin);
-        if (cancelled || !stored) return;
+        if (cancelled || clientRef.current !== verifyingClient || !stored) return;
         if (!mapAppliesTo(stored, vin, client.protocolNumber)) return;
 
         const plan = buildScanPlan(
           { kind: 'parts', requestIds: stored.modules.map((entry) => entry.requestId) },
           currentAddressing,
         );
-        const result = await runScan(client, currentAddressing, plan, {
+        const result = await runScan(verifyingClient, currentAddressing, plan, {
           shouldStop: () => cancelled || stopRef.current,
         });
-        if (cancelled) return;
+        if (cancelled || clientRef.current !== verifyingClient) return;
 
-        const answered = result.modules.map((entry) => entry.requestId);
-        setMap(mergeAfterVerify(stored, answered, new Date().toISOString()));
+        // `result.visited` -- not the plan, and not "every remembered
+        // address" -- because a `stop()` mid-verify or an adapter failure
+        // can leave some of them never actually asked this time.
+        setMap(foldScanIntoMap(stored, result.visited, result.modules, new Date().toISOString()));
       } catch {
         // A quiet, best-effort flow: it only ever confirms or goes stale what
         // is already known, so a failed VIN read, load or verify is not worth
@@ -147,6 +149,7 @@ export function VehicleScanProvider({ children }: { children: ReactNode }) {
         // whatever it was (null, from the reset above), and an explicit scan
         // is the normal way to recover.
       } finally {
+        scanLockRef.current = false;
         if (!cancelled) setBusy(false);
       }
     })();
@@ -158,7 +161,15 @@ export function VehicleScanProvider({ children }: { children: ReactNode }) {
 
   const scan = useCallback(
     async (scope: ScanScope) => {
-      if (!client || !addressing) return;
+      if (!client || !addressing || scanLockRef.current) return;
+      scanLockRef.current = true;
+
+      // Captured now, before any `await`. A whole sweep can run for tens of
+      // seconds; reading these fresh afterward would pick up whatever car is
+      // connected by the time it finishes, not the one it was asked about.
+      const scanningClient = client;
+      const vin = vinRef.current;
+      const protocolId = client.protocolNumber;
 
       stopRef.current = false;
       setBusy(true);
@@ -168,28 +179,25 @@ export function VehicleScanProvider({ children }: { children: ReactNode }) {
         const plan = buildScanPlan(scope, addressing);
         setProgress({ done: 0, total: plan.length, found: 0 });
 
-        const result = await runScan(client, addressing, plan, {
+        const result = await runScan(scanningClient, addressing, plan, {
           onProgress: setProgress,
           shouldStop: () => stopRef.current,
         });
 
-        const now = new Date().toISOString();
-        const vin = vinRef.current;
-        const protocolId = client.protocolNumber;
+        // The connection may have moved on to a different car while this ran.
+        // That car's own `[client]` effect has already reset state for it;
+        // writing this result on top would attribute the old car's modules
+        // to the new car's VIN, or delete the new car's modules outright.
+        if (clientRef.current !== scanningClient) return;
 
-        const nextMap: ModuleMap =
-          scope.kind === 'whole'
-            ? {
-                version: MODULE_MAP_VERSION,
-                vin: vin ?? '',
-                protocolId: protocolId ?? '',
-                discoveredAt: now,
-                modules: result.modules,
-              }
-            : mergeIntoMap(map, result.modules, vin, protocolId, now);
+        const now = new Date().toISOString();
+        const asked = scope.kind === 'whole' ? result.visited : scope.kind === 'parts' ? scope.requestIds : [];
+
+        const folded = foldScanIntoMap(baseMap(map, vin, protocolId, now), asked, result.modules, now);
+        const nextMap: ModuleMap = scope.kind === 'whole' ? { ...folded, discoveredAt: now } : folded;
 
         setMap(nextMap);
-        setFaults(scope.kind === 'whole' ? result.faults : mergeFaults(faults, plan, result.faults));
+        setFaults(mergeFaults(faults, asked, result.faults));
 
         if (vin) await saveModuleMap(nextMap);
 
@@ -199,9 +207,12 @@ export function VehicleScanProvider({ children }: { children: ReactNode }) {
           setError('Scan stopped.');
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Could not complete the scan');
+        if (clientRef.current === scanningClient) {
+          setError(err instanceof Error ? err.message : 'Could not complete the scan');
+        }
       } finally {
-        setBusy(false);
+        scanLockRef.current = false;
+        if (clientRef.current === scanningClient) setBusy(false);
       }
     },
     [client, addressing, map, faults],
