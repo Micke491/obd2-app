@@ -62,6 +62,7 @@ import {
 } from '../src/lib/obd/uds/services';
 import { classifyModule } from '../src/lib/obd/uds/classify';
 import { PART_LABELS, PART_ORDER, type Part } from '../src/lib/obd/uds/parts';
+import { isPlausibleVin } from '../src/lib/obd/vehicle-info';
 import {
   availableParts,
   foldScanIntoMap,
@@ -1150,6 +1151,26 @@ if (sweepSeconds < 20 || sweepSeconds > 90) fail(`a full sweep is estimated at $
 if (estimateSeconds(picked) > 5) fail(`two parts estimated at ${estimateSeconds(picked)}s`);
 
 console.log(`  full sweep ${whole.length} steps, about ${sweepSeconds}s`);
+
+// ── 22b. A garbled VIN read never becomes a storage key ──────────────────────
+section('VIN plausibility gates persistence');
+
+// `parseVin` (in vehicle-info.ts) deliberately returns the raw decoded text,
+// unstripped and un-checked, when that text fails this exact predicate --
+// right for the Vehicle screen, which should still show whatever came off
+// the bus, and wrong for a storage key, which is why `module-map-store.ts`
+// gates on it before the value is ever used as one. `loadModuleMap` and
+// `saveModuleMap` themselves need AsyncStorage and are not covered here, the
+// same way nothing that touches the adapter is; this is the predicate they
+// gate on, proven against the shape of text a garbled read actually produces.
+if (isPlausibleVin('WAUZZZ8K9FA123456') !== true) fail('a real 17-character VIN should be plausible');
+if (isPlausibleVin('VIN NOT AVAILABLE') !== false) fail('adapter filler text must not read as a VIN');
+if (isPlausibleVin('WAUZZZ8K9FA12345') !== false) fail('16 characters is one short of a VIN');
+// I, O and Q never appear in a real VIN -- excluded precisely so a misread
+// character cannot be mistaken for one.
+if (isPlausibleVin('WAUZZZ8K9FAI23456') !== false) fail('a VIN-shaped string containing I must not pass');
+
+console.log('  the predicate module-map-store.ts gates on rejects exactly what a garbled decode looks like');
 
 // ── 23. What the car is made of survives, carefully ──────────────────────────
 section('Module map');

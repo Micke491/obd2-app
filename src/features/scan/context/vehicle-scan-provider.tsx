@@ -141,7 +141,14 @@ export function VehicleScanProvider({ children }: { children: ReactNode }) {
         // `result.visited` -- not the plan, and not "every remembered
         // address" -- because a `stop()` mid-verify or an adapter failure
         // can leave some of them never actually asked this time.
-        setMap(foldScanIntoMap(stored, result.visited, result.modules, new Date().toISOString()));
+        const verifiedAt = new Date().toISOString();
+        setMap(foldScanIntoMap(stored, result.visited, result.modules, verifiedAt));
+        // The verify plan is `parts`, so `visit()` runs the full interrogation
+        // -- `1902AF` and `22F197`, not just the `1901AF` probe -- against
+        // every remembered module. That is the same adapter traffic a manual
+        // scan pays for, and `scan()` keeps it; discarding it here would mean
+        // paying the cost on every connect and using none of the answer.
+        setFaults((prev) => mergeFaults(prev, result.visited, result.faults));
       } catch {
         // A quiet, best-effort flow: it only ever confirms or goes stale what
         // is already known, so a failed VIN read, load or verify is not worth
