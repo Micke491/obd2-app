@@ -20,7 +20,12 @@ import {
 } from '../src/features/connection/lib/connection-state';
 import { describeUnreachableCar, parsePortVoltage } from '../src/features/connection/lib/connection-report';
 import { buildHandshakePlan, worstCaseDuration } from '../src/features/connection/lib/handshake-plan';
-import { askedFromResult, buildScanPlan, estimateSeconds } from '../src/features/scan/lib/scan-plan';
+import {
+  askedFromResult,
+  buildScanPlan,
+  estimateSeconds,
+  requestIdsForParts,
+} from '../src/features/scan/lib/scan-plan';
 import { AUTHORED, AUTHORED_CODES } from '../src/lib/obd/dtc/authored';
 import { CATALOG_SOURCE_ENTRY_COUNT, DTC_CATALOG } from '../src/lib/obd/dtc/catalog';
 import { isValidCode } from '../src/lib/obd/dtc/derive/parse';
@@ -55,12 +60,14 @@ import {
   parseUdsReply,
 } from '../src/lib/obd/uds/services';
 import { classifyModule } from '../src/lib/obd/uds/classify';
-import { PART_LABELS, PART_ORDER } from '../src/lib/obd/uds/parts';
+import { PART_LABELS, PART_ORDER, type Part } from '../src/lib/obd/uds/parts';
 import {
+  availableParts,
   foldScanIntoMap,
   groupByPart,
   mapAppliesTo,
   mergeAfterVerify,
+  sortModulesByFaults,
   type DiscoveredModule,
   type ModuleMap,
 } from '../src/features/scan/lib/module-map';
@@ -1343,6 +1350,91 @@ if (askedFromResult({ kind: 'engine' }, ['7E0']).length !== 0) {
 }
 
 console.log('  asked is what a scan reached, never what it was merely told to try');
+
+// ── 28. What the results screen shows, and what a ticked part means ──────────
+section('Results ordering, filter chips, and picked-part addresses');
+
+const resultModules: DiscoveredModule[] = [
+  { requestId: '7E0', part: 'engine', name: null, faultCount: 1, stale: false, lastSeenAt: '2026-08-01T10:00:00.000Z' },
+  { requestId: '760', part: 'brakes', name: null, faultCount: 3, stale: false, lastSeenAt: '2026-08-01T10:00:00.000Z' },
+  {
+    requestId: '761',
+    part: 'brakes',
+    name: 'Rear brake module',
+    faultCount: 0,
+    stale: true,
+    lastSeenAt: '2026-08-01T10:00:00.000Z',
+  },
+  { requestId: '740', part: 'restraints', name: null, faultCount: 0, stale: false, lastSeenAt: '2026-08-01T10:00:00.000Z' },
+];
+
+// Chips follow the app's fixed part order, not discovery order, and only for
+// parts a module was actually filed under -- ten empty chips would be clutter.
+const chipParts = availableParts(resultModules);
+if (chipParts.join(',') !== 'engine,brakes,restraints') {
+  fail(`chip order came out as ${chipParts.join(',')}, expected PART_ORDER's own order`);
+}
+if (new Set(chipParts).size !== chipParts.length) fail('a part chip was offered twice');
+if (availableParts([]).length !== 0) fail('no modules should offer no chips');
+
+// The module carrying the most faults leads.
+const orderedByFaults = sortModulesByFaults(resultModules);
+if (orderedByFaults.map((entry) => entry.requestId).join(',') !== '760,7E0,740,761') {
+  fail(
+    `sorted as ${orderedByFaults.map((entry) => entry.requestId).join(',')}, expected the noisiest module first`,
+  );
+}
+
+// A null count -- present, but would not say how many -- reads the same as
+// zero rather than sorting to the top by accident.
+const unreadableCountModule: DiscoveredModule = {
+  requestId: '7A0',
+  part: 'other',
+  name: null,
+  faultCount: null,
+  stale: false,
+  lastSeenAt: '2026-08-01T10:00:00.000Z',
+};
+if (sortModulesByFaults([...resultModules, unreadableCountModule])[0].requestId !== '760') {
+  fail('an unreadable count must not outrank a module with a known one');
+}
+
+// Equal counts are not left to whatever order the input happened to arrive
+// in -- asserted explicitly, both forwards and reversed, rather than trusted
+// to fall out of the sort being stable. The tie always breaks the same way on
+// address, so the list cannot reshuffle between two renders of the same data.
+const tiedModules: DiscoveredModule[] = [
+  { requestId: '7E0', part: 'engine', name: null, faultCount: 1, stale: false, lastSeenAt: '2026-08-01T10:00:00.000Z' },
+  { requestId: '761', part: 'brakes', name: null, faultCount: 1, stale: false, lastSeenAt: '2026-08-01T10:00:00.000Z' },
+];
+const tiedForward = sortModulesByFaults(tiedModules).map((entry) => entry.requestId).join(',');
+const tiedReversed = sortModulesByFaults([...tiedModules].reverse()).map((entry) => entry.requestId).join(',');
+if (tiedForward !== '761,7E0' || tiedReversed !== '761,7E0') {
+  fail(`a tie in fault count should always break the same way on address, got ${tiedForward} / ${tiedReversed}`);
+}
+
+// Ticking a part with two modules has to give up both addresses, or the
+// second module is silently never asked again.
+const brakesAddresses = requestIdsForParts(resultModules, new Set<Part>(['brakes']));
+if (brakesAddresses.join(',') !== '760,761') {
+  fail(`ticking brakes gave ${brakesAddresses.join(',')}, expected both brake modules`);
+}
+
+// Two ticked parts is just the union.
+const twoPartAddresses = requestIdsForParts(resultModules, new Set<Part>(['engine', 'restraints']));
+if (twoPartAddresses.join(',') !== '7E0,740') fail(`two ticked parts gave ${twoPartAddresses.join(',')}`);
+
+// Nothing ticked asks nothing -- there is no implicit "everything" fallback.
+if (requestIdsForParts(resultModules, new Set<Part>()).length !== 0) {
+  fail('an empty selection should ask for nothing');
+}
+
+// A part nobody has must not throw or invent an address.
+if (requestIdsForParts(resultModules, new Set<Part>(['suspension'])).length !== 0) {
+  fail('a part with no modules should resolve to no addresses');
+}
+
+console.log('  chips follow PART_ORDER, results lead with the noisiest module, ties are deterministic, and a ticked part expands to its addresses');
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');

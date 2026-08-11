@@ -31,6 +31,7 @@ export default function LiveLayout() {
       <Stack.Screen name="live" options={{ headerShown: false }} />
       <Stack.Screen name="sensors" options={{ headerShown: false }} />
       <Stack.Screen name="codes" options={{ headerShown: false }} />
+      <Stack.Screen name="scan" options={{ title: 'Scan the car' }} />
       <Stack.Screen name="freeze-frame" options={{ title: 'Freeze frame' }} />
       <Stack.Screen name="monitors" options={{ title: 'Readiness monitors' }} />
       <Stack.Screen name="vehicle" options={{ title: 'Vehicle details' }} />

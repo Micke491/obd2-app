@@ -1,17 +1,23 @@
 import { useRouter } from 'expo-router';
-import { useMemo } from 'react';
-import { Alert, ScrollView, StyleSheet, View } from 'react-native';
+import { useMemo, useState } from 'react';
+import { Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 
 import { Button } from '@/components/button';
 import { Card } from '@/components/card';
 import { EmptyState } from '@/components/empty-state';
+import { Meter } from '@/components/meter';
 import { Pill } from '@/components/pill';
 import { NavRow } from '@/components/rows';
 import { Screen } from '@/components/screen';
 import { ScreenHeader } from '@/components/screen-header';
+import { Section } from '@/components/section';
 import { AppText } from '@/components/text';
+import { ModuleGroup } from '@/features/scan/components/module-group';
+import { useVehicleScan } from '@/features/scan/hooks/use-vehicle-scan';
+import { availableParts, sortModulesByFaults } from '@/features/scan/lib/module-map';
 import { SEVERITY_LABELS, resolveDtcDetail, type DtcDetail, type DtcSeverity } from '@/lib/obd/dtc';
+import { PART_LABELS, type Part } from '@/lib/obd/uds/parts';
 import { useTheme, useThemedStyles, type Theme } from '@/theme';
 
 import { DRIVE_ICON, driveTint, severityTint } from '../components/severity';
@@ -63,9 +69,26 @@ export function CodesScreen() {
   const router = useRouter();
   const theme = useTheme();
   const styles = useThemedStyles(createStyles);
-  const { codes, state, busy, error, unsupported, reported, total, read, clear } = useTroubleCodes();
+  const { codes, state, busy, error, unsupported, reported, total, clear } = useTroubleCodes();
+  const {
+    map,
+    faults: moduleFaults,
+    busy: scanBusy,
+    progress: scanProgress,
+    error: scanError,
+  } = useVehicleScan();
 
   const hasRead = state === 'read';
+  const [filterPart, setFilterPart] = useState<Part | null>(null);
+
+  const chips = useMemo(() => (map ? availableParts(map.modules) : []), [map]);
+  const activeFilter = filterPart && chips.includes(filterPart) ? filterPart : null;
+
+  const moduleList = useMemo(() => {
+    if (!map) return [];
+    const scoped = activeFilter ? map.modules.filter((entry) => entry.part === activeFilter) : map.modules;
+    return sortModulesByFaults(scoped);
+  }, [map, activeFilter]);
 
   const resolved = useMemo(() => {
     const out: Record<DtcGroup, DtcDetail[]> = { stored: [], pending: [], permanent: [] };
@@ -212,6 +235,89 @@ export function CodesScreen() {
           );
         })}
 
+        {map || scanBusy || scanError ? (
+          <Section
+            title="Other modules"
+            hint={
+              !scanBusy && map && map.modules.length > 0
+                ? 'Everything beyond the engine that answered, most faults first.'
+                : undefined
+            }
+            meta={
+              scanBusy
+                ? scanProgress
+                  ? `${scanProgress.done} of ${scanProgress.total}`
+                  : 'Checking…'
+                : map
+                  ? `${map.modules.length} found`
+                  : undefined
+            }
+          >
+            {scanError ? (
+              <Card spine={theme.color.danger}>
+                <AppText variant="body" tone="danger">
+                  {scanError}
+                </AppText>
+              </Card>
+            ) : null}
+
+            {scanBusy ? (
+              <Card onPress={() => router.push('/scan')}>
+                {scanProgress ? (
+                  <>
+                    <Meter fraction={scanProgress.total ? scanProgress.done / scanProgress.total : 0} />
+                    <AppText variant="caption" tone="muted" style={styles.scanNote}>
+                      Scanning… {scanProgress.found} module{scanProgress.found === 1 ? '' : 's'} found so far.
+                    </AppText>
+                  </>
+                ) : (
+                  <AppText variant="caption" tone="muted">
+                    Checking on modules found before…
+                  </AppText>
+                )}
+              </Card>
+            ) : null}
+
+            {!scanBusy && map && map.modules.length === 0 ? (
+              <AppText variant="body" tone="muted">
+                Nothing on this car answered outside the engine.
+              </AppText>
+            ) : null}
+
+            {map && map.modules.length > 0 ? (
+              <>
+                {chips.length > 1 ? (
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.chipRow}
+                  >
+                    <ChipButton label="All" selected={activeFilter === null} onPress={() => setFilterPart(null)} />
+                    {chips.map((part) => (
+                      <ChipButton
+                        key={part}
+                        label={PART_LABELS[part]}
+                        selected={activeFilter === part}
+                        onPress={() => setFilterPart(part)}
+                      />
+                    ))}
+                  </ScrollView>
+                ) : null}
+
+                <View style={styles.moduleList}>
+                  {moduleList.map((module) => (
+                    <ModuleGroup
+                      key={module.requestId}
+                      module={module}
+                      faults={moduleFaults[module.requestId] ?? []}
+                    />
+                  ))}
+                </View>
+              </>
+            ) : null}
+          </Section>
+        ) : null}
+
         <View style={styles.links}>
           <NavRow
             icon="camera-timer"
@@ -231,11 +337,10 @@ export function CodesScreen() {
       <View style={styles.footer}>
         <View style={styles.footerButton}>
           <Button
-            label={hasRead ? 'Read again' : 'Read codes'}
-            onPress={() => void read()}
-            variant={hasRead ? 'secondary' : 'primary'}
-            busy={busy}
-            icon={hasRead ? 'refresh' : 'card-search-outline'}
+            label={hasRead || map ? 'Scan again' : 'Scan the car'}
+            onPress={() => router.push('/scan')}
+            variant={hasRead || map ? 'secondary' : 'primary'}
+            icon="radar"
           />
         </View>
         {hasRead ? (
@@ -289,9 +394,24 @@ function CodeCard({ detail, onPress }: { detail: DtcDetail; onPress: () => void 
   );
 }
 
+/** A part filter, styled like a `Pill` but pressable — there is no separate
+ *  chip primitive in this app's shared components, and a `Pill` already looks
+ *  exactly right; it only needed a `Pressable` around it. */
+function ChipButton({ label, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
+  const theme = useTheme();
+  return (
+    <Pressable onPress={onPress} accessibilityRole="button" accessibilityState={{ selected }}>
+      <Pill label={label} color={theme.color.accentInk} background={theme.color.accentWash} filled={selected} />
+    </Pressable>
+  );
+}
+
 const createStyles = (t: Theme) =>
   StyleSheet.create({
     body: { gap: t.space.xl, paddingBottom: t.space.xl },
+    scanNote: { marginTop: t.space.sm },
+    chipRow: { gap: t.space.sm, paddingBottom: t.space.xs },
+    moduleList: { gap: t.space.sm, marginTop: t.space.sm },
     summaryHead: { flexDirection: 'row', alignItems: 'center', gap: t.space.sm },
     summaryText: { marginTop: t.space.sm },
     group: { gap: t.space.xs },

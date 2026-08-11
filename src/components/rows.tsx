@@ -117,6 +117,46 @@ export function ChoiceRow({
   );
 }
 
+/** Row in a multi-choice list; each row carries its own checkbox rather than
+ *  sharing one selection with the rest of the list. */
+export function CheckRow({
+  label,
+  hint,
+  checked,
+  onPress,
+}: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onPress: () => void;
+}) {
+  const theme = useTheme();
+  const styles = useThemedStyles(createStyles);
+
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked }}
+      style={({ pressed }) => [styles.row, pressed && styles.pressed]}
+    >
+      <View style={styles.text}>
+        <AppText variant="bodyStrong">{label}</AppText>
+        {hint ? (
+          <AppText variant="caption" tone="muted">
+            {hint}
+          </AppText>
+        ) : null}
+      </View>
+      <MaterialCommunityIcons
+        name={checked ? 'checkbox-marked' : 'checkbox-blank-outline'}
+        size={22}
+        color={checked ? theme.color.accentInk : theme.color.inkFaint}
+      />
+    </Pressable>
+  );
+}
+
 /** Static label / value pair, for identification data. */
 export function FieldRow({ label, children }: { label: string; children: ReactNode }) {
   const styles = useThemedStyles(createStyles);

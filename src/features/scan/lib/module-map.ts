@@ -95,3 +95,28 @@ export function groupByPart(
     modules: modules.filter((entry) => entry.part === part),
   })).filter((group) => group.modules.length > 0);
 }
+
+/**
+ * The parts worth offering as filter chips: the app's fixed order, narrowed to
+ * whatever these particular modules actually cover. Ten chips for a car with
+ * three modules would be clutter nobody could use.
+ */
+export function availableParts(modules: DiscoveredModule[]): Part[] {
+  const present = new Set(modules.map((entry) => entry.part));
+  return PART_ORDER.filter((part) => present.has(part));
+}
+
+/**
+ * Results read most-consequential first: whichever module is carrying the
+ * most faults leads. A module whose count was never learned (present, but it
+ * would not say) sorts as if it had none, rather than by accident outranking
+ * one that is honestly reporting zero or more. Ties break on address, so two
+ * modules with the same count do not swap places between renders.
+ */
+export function sortModulesByFaults(modules: DiscoveredModule[]): DiscoveredModule[] {
+  return [...modules].sort((a, b) => {
+    const byCount = (b.faultCount ?? 0) - (a.faultCount ?? 0);
+    if (byCount !== 0) return byCount;
+    return a.requestId < b.requestId ? -1 : a.requestId > b.requestId ? 1 : 0;
+  });
+}
