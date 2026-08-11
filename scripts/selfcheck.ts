@@ -67,6 +67,7 @@ import {
   groupByPart,
   mapAppliesTo,
   mergeAfterVerify,
+  partStaleness,
   sortModulesByFaults,
   type DiscoveredModule,
   type ModuleMap,
@@ -1435,6 +1436,43 @@ if (requestIdsForParts(resultModules, new Set<Part>(['suspension'])).length !== 
 }
 
 console.log('  chips follow PART_ORDER, results lead with the noisiest module, ties are deterministic, and a ticked part expands to its addresses');
+
+// ── 29. A part's checklist row says whether it is still answering ────────────
+section('Part staleness for the checklist');
+
+const noStaleGroup: DiscoveredModule[] = [
+  { requestId: '760', part: 'brakes', name: null, faultCount: 0, stale: false, lastSeenAt: '2026-08-01T10:00:00.000Z' },
+  { requestId: '761', part: 'brakes', name: null, faultCount: 0, stale: false, lastSeenAt: '2026-08-01T10:00:00.000Z' },
+];
+if (partStaleness(noStaleGroup) !== 'awake') fail('every module answering should read as awake');
+
+const allStaleGroup: DiscoveredModule[] = [
+  { requestId: '760', part: 'brakes', name: null, faultCount: 0, stale: true, lastSeenAt: '2026-08-01T10:00:00.000Z' },
+  { requestId: '761', part: 'brakes', name: null, faultCount: 0, stale: true, lastSeenAt: '2026-08-01T10:00:00.000Z' },
+];
+if (partStaleness(allStaleGroup) !== 'asleep') fail('every module gone quiet should read as asleep');
+
+// The case the review named: a part is neither "fine" nor "gone" when it is
+// a mix, and must not silently fall into either of the easy cases.
+const mixedStaleGroup: DiscoveredModule[] = [
+  { requestId: '760', part: 'brakes', name: null, faultCount: 0, stale: false, lastSeenAt: '2026-08-01T10:00:00.000Z' },
+  { requestId: '761', part: 'brakes', name: null, faultCount: 0, stale: true, lastSeenAt: '2026-08-01T10:00:00.000Z' },
+];
+if (partStaleness(mixedStaleGroup) !== 'partly-asleep') {
+  fail(`a part with one quiet module out of two read as "${partStaleness(mixedStaleGroup)}", expected partly-asleep`);
+}
+
+// A single stale module is still a mix, not a rounding error toward "asleep".
+const oneOfThreeStale: DiscoveredModule[] = [
+  ...noStaleGroup,
+  { requestId: '762', part: 'brakes', name: null, faultCount: 0, stale: true, lastSeenAt: '2026-08-01T10:00:00.000Z' },
+];
+if (partStaleness(oneOfThreeStale) !== 'partly-asleep') fail('one quiet module among several should not read as fully asleep');
+
+// A part nobody found yet has nothing to be asleep about.
+if (partStaleness([]) !== 'awake') fail('a part with no modules should not read as asleep');
+
+console.log('  a part reads awake, partly asleep, or asleep -- never silently rounded to either end');
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');

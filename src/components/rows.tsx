@@ -123,11 +123,15 @@ export function CheckRow({
   label,
   hint,
   checked,
+  badge,
   onPress,
 }: {
   label: string;
   hint?: string;
   checked: boolean;
+  /** Small marker after the label, e.g. a status `Pill` — for a fact about
+   *  the row that is not itself the selection. */
+  badge?: ReactNode;
   onPress: () => void;
 }) {
   const theme = useTheme();
@@ -141,7 +145,10 @@ export function CheckRow({
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
       <View style={styles.text}>
-        <AppText variant="bodyStrong">{label}</AppText>
+        <View style={styles.labelRow}>
+          <AppText variant="bodyStrong">{label}</AppText>
+          {badge}
+        </View>
         {hint ? (
           <AppText variant="caption" tone="muted">
             {hint}
@@ -186,6 +193,7 @@ const createStyles = (t: Theme) =>
     },
     pressed: { backgroundColor: t.color.surfaceSunken },
     text: { flex: 1, gap: 1 },
+    labelRow: { flexDirection: 'row', alignItems: 'center', gap: t.space.sm },
     value: { maxWidth: '45%', textAlign: 'right' },
     field: {
       gap: t.space.xs,

@@ -6,6 +6,7 @@ import { Button } from '@/components/button';
 import { Card } from '@/components/card';
 import { EmptyState } from '@/components/empty-state';
 import { Meter } from '@/components/meter';
+import { Pill } from '@/components/pill';
 import { CheckRow, ChoiceRow } from '@/components/rows';
 import { Screen } from '@/components/screen';
 import { Section } from '@/components/section';
@@ -16,7 +17,7 @@ import { PART_LABELS, type Part } from '@/lib/obd/uds/parts';
 import { useTheme, useThemedStyles, type Theme } from '@/theme';
 
 import { useVehicleScan } from '../hooks/use-vehicle-scan';
-import { groupByPart, type DiscoveredModule } from '../lib/module-map';
+import { groupByPart, partStaleness, type DiscoveredModule } from '../lib/module-map';
 import { buildScanPlan, estimateSeconds, requestIdsForParts } from '../lib/scan-plan';
 
 type Selection = { kind: 'whole' } | { kind: 'engine' } | { kind: 'parts'; parts: Set<Part> };
@@ -188,15 +189,27 @@ export function ScanScopeScreen() {
               hint="Pick specific parts to check again, without a full sweep."
               meta={`${map.modules.length} found`}
             >
-              {groups.map((group) => (
-                <CheckRow
-                  key={group.part}
-                  label={PART_LABELS[group.part]}
-                  hint={partHint(group.modules)}
-                  checked={selectedParts.has(group.part)}
-                  onPress={() => togglePart(group.part)}
-                />
-              ))}
+              {groups.map((group) => {
+                const staleness = partStaleness(group.modules);
+                return (
+                  <CheckRow
+                    key={group.part}
+                    label={PART_LABELS[group.part]}
+                    hint={partHint(group.modules)}
+                    checked={selectedParts.has(group.part)}
+                    onPress={() => togglePart(group.part)}
+                    badge={
+                      staleness === 'awake' ? undefined : (
+                        <Pill
+                          label={staleness === 'asleep' ? 'Asleep' : 'Partly asleep'}
+                          color={theme.color.inkFaint}
+                          background={theme.color.surfaceSunken}
+                        />
+                      )
+                    }
+                  />
+                );
+              })}
               {selection.kind === 'parts' && selection.parts.size > 0 ? (
                 <AppText variant="caption" tone="muted">
                   About {formatDuration(partsSeconds)} for the selected parts.

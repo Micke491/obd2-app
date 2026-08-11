@@ -120,3 +120,20 @@ export function sortModulesByFaults(modules: DiscoveredModule[]): DiscoveredModu
     return a.requestId < b.requestId ? -1 : a.requestId > b.requestId ? 1 : 0;
   });
 }
+
+export type PartStaleness = 'awake' | 'partly-asleep' | 'asleep';
+
+/**
+ * Whether a part's checklist row should read as sleeping, and how much.
+ *
+ * Staleness is a per-module fact, but the checklist ticks a whole part at
+ * once, so a part with a mix of answering and quiet modules is neither
+ * "fine" nor "gone" -- it has to say so, rather than reading as identical to
+ * one or the other because the two easy cases got all the attention.
+ */
+export function partStaleness(modules: DiscoveredModule[]): PartStaleness {
+  if (modules.length === 0) return 'awake';
+  const staleCount = modules.filter((module) => module.stale).length;
+  if (staleCount === 0) return 'awake';
+  return staleCount === modules.length ? 'asleep' : 'partly-asleep';
+}
