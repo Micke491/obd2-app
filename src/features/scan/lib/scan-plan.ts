@@ -32,6 +32,27 @@ export type ScanStep = {
 const DISCOVER_SECONDS = 0.16;
 const INTERROGATE_SECONDS = 0.9;
 
+/**
+ * How many modules a whole-car sweep typically finds and interrogates inline,
+ * for estimating the cost `estimateSeconds` cannot read off the plan itself.
+ *
+ * A `whole` plan is all `discover` steps -- `visit()` decides whether to
+ * interrogate an address only once it has answered phase 1, which is runtime
+ * behaviour a static plan has no entry for. The eight legislated addresses
+ * are near-certain responders and a typical car answers a few more beyond
+ * them; ten is the same planning figure the design settled on.
+ */
+const TYPICAL_RESPONDERS_PER_SWEEP = 10;
+
+/**
+ * The legacy engine-only read costs nothing in `ScanStep`s -- `buildScanPlan`
+ * returns none for it, deliberately, since that path bypasses the scan engine
+ * entirely and asks `0101`, `03`, `07` and `0A` exactly as the app always
+ * has. `estimateSeconds([])` would therefore always read 1 second, which is
+ * not what that path costs; the scope screen uses this instead.
+ */
+export const ENGINE_ONLY_SECONDS = 3;
+
 export function buildScanPlan(scope: ScanScope, addressing: CanAddressing): ScanStep[] {
   if (scope.kind === 'engine') return [];
 
@@ -85,5 +106,16 @@ export function estimateSeconds(plan: ScanStep[]): number {
     (total, step) => total + (step.kind === 'discover' ? DISCOVER_SECONDS : INTERROGATE_SECONDS),
     0,
   );
-  return Math.max(1, Math.round(seconds));
+
+  // A plan that is entirely `discover` steps is a whole-car sweep -- the only
+  // scope `buildScanPlan` ever builds that way -- and `visit()` does not stop
+  // at discovery: every address that answers phase 1 is interrogated inline,
+  // in the same run. Adding those steps up front, as `parts` does, is not an
+  // option here, because which addresses answer is not known until the sweep
+  // is actually running; this is the same estimate the design settled on for
+  // the same reason.
+  const allDiscovery = plan.length > 0 && plan.every((step) => step.kind === 'discover');
+  const interrogation = allDiscovery ? TYPICAL_RESPONDERS_PER_SWEEP * INTERROGATE_SECONDS : 0;
+
+  return Math.max(1, Math.round(seconds + interrogation));
 }

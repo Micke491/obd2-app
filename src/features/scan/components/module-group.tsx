@@ -10,13 +10,7 @@ import { faultLabel, type ModuleFault } from '@/lib/obd/uds/faults';
 import { PART_LABELS } from '@/lib/obd/uds/parts';
 import { useTheme, useThemedStyles, type Theme } from '@/theme';
 
-import type { DiscoveredModule } from '../lib/module-map';
-
-function formatLastSeen(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return 'an earlier scan';
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
+import { formatLastSeen, moduleFaultState, type DiscoveredModule } from '../lib/module-map';
 
 /**
  * One discovered module: what kind of part it is, whether it is still
@@ -31,33 +25,29 @@ export function ModuleGroup({ module, faults }: { module: DiscoveredModule; faul
   const theme = useTheme();
   const styles = useThemedStyles(createStyles);
 
-  const count = module.faultCount;
-  const failingNow = faults.some((fault) => fault.status.failingNow);
-  // Four states, from what was actually learned: a real list, an honest zero,
-  // a count with no list behind it (phase 1 answered, phase 2 refused), and no
-  // count at all (the module would not even say how many).
-  const clean = faults.length === 0 && count === 0;
-  const unreadable = faults.length === 0 && count !== null && count > 0;
-  const unknown = faults.length === 0 && count === null;
+  const state = moduleFaultState(module, faults);
 
-  const tint = module.stale
-    ? { color: theme.color.inkFaint, background: theme.color.surfaceSunken }
-    : failingNow
-      ? { color: theme.color.danger, background: theme.color.dangerWash }
-      : faults.length > 0
-        ? { color: theme.color.warn, background: theme.color.warnWash }
-        : clean
-          ? { color: theme.color.ok, background: theme.color.okWash }
-          : { color: theme.color.inkMuted, background: theme.color.surfaceSunken };
+  const tint =
+    state.kind === 'asleep'
+      ? { color: theme.color.inkFaint, background: theme.color.surfaceSunken }
+      : state.kind === 'faults' && state.failingNow
+        ? { color: theme.color.danger, background: theme.color.dangerWash }
+        : state.kind === 'faults'
+          ? { color: theme.color.warn, background: theme.color.warnWash }
+          : state.kind === 'clean'
+            ? { color: theme.color.ok, background: theme.color.okWash }
+            : { color: theme.color.inkMuted, background: theme.color.surfaceSunken };
 
   const badgeLabel =
-    faults.length > 0
-      ? `${faults.length} fault${faults.length === 1 ? '' : 's'}`
-      : clean
+    state.kind === 'faults'
+      ? `${state.count} fault${state.count === 1 ? '' : 's'}`
+      : state.kind === 'clean'
         ? 'No faults'
-        : unreadable
-          ? `${count} unread`
-          : 'Unknown';
+        : state.kind === 'unreadable'
+          ? `${state.count} unread`
+          : state.kind === 'asleep'
+            ? 'Asleep'
+            : 'Unknown';
 
   return (
     <Card spine={tint.color}>
@@ -82,13 +72,13 @@ export function ModuleGroup({ module, faults }: { module: DiscoveredModule; faul
         ) : null}
       </View>
 
-      {faults.length > 0 ? (
+      {state.kind === 'faults' ? (
         <View style={styles.faultList}>
           {faults.map((fault) => {
             const detail = resolveDtcDetail(fault.code);
             return (
               <Pressable
-                key={fault.code}
+                key={faultLabel(fault)}
                 onPress={() => router.push(`/code/${fault.code}`)}
                 accessibilityRole="button"
                 accessibilityLabel={`${fault.code}. ${detail.title}`}
@@ -110,18 +100,18 @@ export function ModuleGroup({ module, faults }: { module: DiscoveredModule; faul
             );
           })}
         </View>
-      ) : clean ? (
+      ) : state.kind === 'clean' ? (
         <View style={styles.clean}>
           <MaterialCommunityIcons name="check-circle-outline" size={16} color={theme.color.ok} />
           <AppText variant="caption" tone="ok">
             No faults reported
           </AppText>
         </View>
-      ) : unreadable ? (
+      ) : state.kind === 'unreadable' ? (
         <AppText variant="caption" tone="muted" style={styles.note}>
-          Reported {count} fault{count === 1 ? '' : 's'}, but would not list them.
+          Reported {state.count} fault{state.count === 1 ? '' : 's'}, but would not list them.
         </AppText>
-      ) : unknown ? (
+      ) : state.kind === 'unknown' ? (
         <AppText variant="caption" tone="muted" style={styles.note}>
           Present, but would not say what it is storing.
         </AppText>

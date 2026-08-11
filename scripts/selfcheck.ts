@@ -21,6 +21,7 @@ import {
 import { describeUnreachableCar, parsePortVoltage } from '../src/features/connection/lib/connection-report';
 import { buildHandshakePlan, worstCaseDuration } from '../src/features/connection/lib/handshake-plan';
 import {
+  ENGINE_ONLY_SECONDS,
   askedFromResult,
   buildScanPlan,
   estimateSeconds,
@@ -47,7 +48,7 @@ import {
   sweepLinkSettings,
   sweepTargets,
 } from '../src/lib/obd/uds/addressing';
-import { decodeKwpFault, decodeUdsFault, faultLabel } from '../src/lib/obd/uds/faults';
+import { decodeKwpFault, decodeUdsFault, faultLabel, type ModuleFault } from '../src/lib/obd/uds/faults';
 import {
   KWP_DTC_REQUEST,
   SYSTEM_NAME_REQUEST,
@@ -68,7 +69,7 @@ import {
   foldScanIntoMap,
   groupByPart,
   mapAppliesTo,
-  mergeAfterVerify,
+  moduleFaultState,
   partStaleness,
   sortModulesByFaults,
   type DiscoveredModule,
@@ -966,6 +967,21 @@ if (counted.kind === 'positive' && parseDtcCount(counted.body) !== 2) {
   fail(`fault count came out as ${parseDtcCount(counted.body)}`);
 }
 
+// A trailing \r is ordinary adapter output, not a second empty line, and
+// must not stop the count byte pair from being read.
+const trailing = parseUdsReply('5901FF010002\r\r', 0x19);
+if (trailing.kind !== 'positive') fail(`a reply with a trailing CR read as ${trailing.kind}`);
+if (trailing.kind === 'positive' && parseDtcCount(trailing.body) !== 2) {
+  fail(`a trailing CR changed the fault count to ${parseDtcCount(trailing.body)}`);
+}
+
+// A truncated 19 01 body -- shorter than the count bytes it should carry --
+// has to read as "unknown", not as a wrong number pulled from bytes that
+// are not there. This is user-visible: it is what stands between "3 faults"
+// and "would not say" on a module's card.
+if (parseDtcCount([0x01, 0xff, 0x40]) !== null) fail('a truncated 19 01 body should not produce a count');
+if (parseDtcCount([]) !== null) fail('an empty 19 01 body should not produce a count');
+
 // A refusal is the sweep's most valuable signal: it proves a module is there.
 // parseResponse throws the NRC away, which is why scan code never uses it.
 const refused = parseUdsReply('7F1911', 0x19);
@@ -983,6 +999,7 @@ if (parseUdsReply('CAN ERROR', 0x19).kind !== 'unusable') fail('CAN ERROR should
 
 if (nrcAction(0x11) !== 'kwp-fallback') fail('serviceNotSupported should fall back to KWP');
 if (nrcAction(0x12) !== 'retry-mask') fail('subFunctionNotSupported should retry the mask');
+if (nrcAction(0x13) !== 'retry-mask') fail('incorrectMessageLengthOrInvalidFormat should retry the mask');
 if (nrcAction(0x31) !== 'retry-mask') fail('requestOutOfRange should retry the mask');
 if (nrcAction(0x78) !== 'pending') fail('responsePending should wait');
 if (nrcAction(0x22) !== 'present-unreadable') fail('conditionsNotCorrect means present but not readable');
@@ -994,6 +1011,22 @@ if (listed.kind === 'positive') {
   const groups = parseDtcGroups(listed.body);
   if (groups.length !== 2) fail(`expected 2 faults, got ${groups.length}`);
   if (groups[0].join(',') !== '64,53,17,8') fail(`first fault decoded as ${groups[0]}`);
+}
+
+// A `19 02` reply carrying more than one fault always arrives on a real bus
+// as an ISO-TP group -- a byte-count line then sequenced `N:` lines, the
+// same shape mode 03 multi-frame replies already have coverage for in
+// section 8 -- not as the single flat line every fixture above uses. Same
+// twelve bytes as the flat fixture, split at the frame boundary a real
+// adapter would use, so the two parses have to agree.
+const multiFrame19 = parseUdsReply('00C\r0:5902FF403511\r1:08403612042F\r\r', 0x19);
+if (multiFrame19.kind !== 'positive') {
+  fail(`a multi-frame 19 02 reply read as ${multiFrame19.kind}, not positive`);
+} else {
+  const multiGroups = parseDtcGroups(multiFrame19.body);
+  if (multiGroups.length !== 2) fail(`a multi-frame fault list decoded ${multiGroups.length} faults, expected 2`);
+  if (multiGroups[0]?.join(',') !== '64,53,17,8') fail(`multi-frame first fault decoded as ${multiGroups[0]}`);
+  if (multiGroups[1]?.join(',') !== '64,54,18,4') fail(`multi-frame second fault decoded as ${multiGroups[1]}`);
 }
 
 // 62 F1 97 then ASCII. Padding bytes are dropped.
@@ -1067,6 +1100,15 @@ for (const part of PART_ORDER) {
   if (!PART_LABELS[part]) fail(`part "${part}" has no label`);
 }
 if (new Set(PART_ORDER).size !== PART_ORDER.length) fail('a part is listed twice');
+// `PART_LABELS` is a `Record<Part, string>`, so the compiler already forces
+// it to carry every `Part` -- but nothing forces `PART_ORDER`, a plain
+// array, to list them all. A `Part` missing from it is not a type error,
+// just a part silently dropped from `groupByPart`, `availableParts` and the
+// whole results UI. Combined with the no-duplicates check above, matching
+// lengths is enough to prove the two agree.
+if (PART_ORDER.length !== Object.keys(PART_LABELS).length) {
+  fail(`PART_ORDER lists ${PART_ORDER.length} parts, PART_LABELS knows ${Object.keys(PART_LABELS).length}`);
+}
 
 // 1. The module's own name, when it answered 22F197.
 const classifyByName = (name: string) => classifyModule({ name, codes: [], requestId: '7A0' });
@@ -1074,6 +1116,14 @@ if (classifyByName('ABS') !== 'brakes') fail('ABS should be brakes');
 if (classifyByName('ESP') !== 'brakes') fail('ESP should be brakes');
 if (classifyByName('Airbag') !== 'restraints') fail('Airbag should be restraints');
 if (classifyByName('SRS') !== 'restraints') fail('SRS should be restraints');
+// Restraints has to be checked before instruments, or this name is filed
+// under "Cluster" instead: `NAME_PATTERNS` stops at the first match, and
+// CLUSTER (instruments) would otherwise beat AIRBAG (restraints) for a name
+// that legitimately contains both words. Pinned here, not just relied on by
+// ordering, so reordering `NAME_PATTERNS` fails loudly instead of quietly.
+if (classifyByName('Airbag Cluster Sensor') !== 'restraints') {
+  fail('"Airbag Cluster Sensor" should be restraints, not instruments -- NAME_PATTERNS order regressed');
+}
 if (classifyByName('EPS') !== 'steering') fail('EPS should be steering');
 if (classifyByName('Getriebe') !== 'transmission') fail('Getriebe should be transmission');
 if (classifyByName('Kombi') !== 'instruments') fail('Kombi should be instruments');
@@ -1150,7 +1200,25 @@ const sweepSeconds = estimateSeconds(whole);
 if (sweepSeconds < 20 || sweepSeconds > 90) fail(`a full sweep is estimated at ${sweepSeconds}s`);
 if (estimateSeconds(picked) > 5) fail(`two parts estimated at ${estimateSeconds(picked)}s`);
 
-console.log(`  full sweep ${whole.length} steps, about ${sweepSeconds}s`);
+// A whole-car plan is all `discover` steps -- `visit()` decides whether to
+// interrogate an address only once it has answered, which a static plan has
+// no entry for -- so an estimate built from the plan alone used to promise
+// about 41s for a sweep that also spends real time on the modules it finds.
+// 45 sits above that old, too-low figure and below the corrected one, so a
+// regression back to discovery-only trips it.
+if (sweepSeconds < 45) {
+  fail(`a whole-car estimate of ${sweepSeconds}s ignores the interrogation visit() performs on what it finds`);
+}
+
+// The engine-only path never touches the scan engine at all -- its plan is
+// always empty -- so its estimate cannot come from `estimateSeconds`, and
+// `Math.max(1, 0)` used to be what the scope screen showed for a path the
+// design measures at about 3s.
+if (ENGINE_ONLY_SECONDS < 2) {
+  fail(`the engine-only estimate of ${ENGINE_ONLY_SECONDS}s does not reflect four real requests`);
+}
+
+console.log(`  full sweep ${whole.length} steps, about ${sweepSeconds}s; engine-only about ${ENGINE_ONLY_SECONDS}s`);
 
 // ── 22b. A garbled VIN read never becomes a storage key ──────────────────────
 section('VIN plausibility gates persistence');
@@ -1192,32 +1260,6 @@ const saved: ModuleMap = {
   modules: [moduleData('7E0', 'engine'), moduleData('760', 'brakes'), moduleData('740', 'restraints')],
 };
 
-// A module that answers is confirmed and its date moves forward.
-const now = '2026-08-10T09:00:00.000Z';
-const verified = mergeAfterVerify(saved, ['7E0', '760'], now);
-if (verified.modules.length !== 3) fail('re-verifying dropped a module');
-
-const stillThere = verified.modules.find((entry) => entry.requestId === '7E0');
-if (stillThere?.stale) fail('a module that answered was marked stale');
-if (stillThere?.lastSeenAt !== now) fail('a module that answered kept its old date');
-
-// A module that stays quiet is marked, not deleted. A module that is asleep is
-// not a module that has been removed, and deleting it would silently shrink the
-// picker with no way for anyone to notice.
-const quiet = verified.modules.find((entry) => entry.requestId === '740');
-if (!quiet) {
-  fail('a silent module was deleted instead of marked');
-} else {
-  if (!quiet.stale) fail('a silent module should be marked stale');
-  if (quiet.lastSeenAt !== '2026-08-01T10:00:00.000Z') fail('a silent module had its date moved');
-}
-
-// A stale module that answers again is well again.
-const returned = mergeAfterVerify(verified, ['740'], '2026-08-11T09:00:00.000Z');
-if (returned.modules.find((entry) => entry.requestId === '740')?.stale) {
-  fail('a module that came back is still marked stale');
-}
-
 // Applying another car's map would offer addresses this car does not have.
 if (!mapAppliesTo(saved, 'WAUZZZ8K9FA123456', '6')) fail('a map should apply to its own car');
 if (mapAppliesTo(saved, 'WVWZZZ1KZAW123456', '6')) fail('a map was applied to a different VIN');
@@ -1233,7 +1275,7 @@ if (grouped.map((entry) => entry.part).join(',') !== 'engine,brakes,restraints')
 }
 if (grouped.some((entry) => entry.modules.length === 0)) fail('an empty part group was emitted');
 
-console.log('  maps merge, go stale rather than vanish, and stay on their own car');
+console.log('  a map stays on its own car and its own bus, and groups in a fixed order');
 
 // ── 24. A sweep is not a broken link ─────────────────────────────────────────
 section('Trouble reporting during a sweep');
@@ -1553,6 +1595,79 @@ if (partStaleness(oneOfThreeStale) !== 'partly-asleep') fail('one quiet module a
 if (partStaleness([]) !== 'awake') fail('a part with no modules should not read as asleep');
 
 console.log('  a part reads awake, partly asleep, or asleep -- never silently rounded to either end');
+
+// ── 30. A module's card says what was actually learned ──────────────────────
+section('Module fault state for the results card');
+
+const activeFault: ModuleFault = {
+  code: 'C0035',
+  failureType: 0x11,
+  failureTypeLabel: 'Circuit shorted to ground',
+  status: { failingNow: true, confirmed: true, raw: 0x09 },
+};
+const storedFault: ModuleFault = {
+  code: 'C0036',
+  failureType: 0x1c,
+  failureTypeLabel: 'Circuit voltage out of range',
+  status: { failingNow: false, confirmed: true, raw: 0x08 },
+};
+
+const freshModule = (faultCount: number | null): DiscoveredModule => ({
+  requestId: '760',
+  part: 'brakes',
+  name: 'ABS',
+  faultCount,
+  stale: false,
+  lastSeenAt: '2026-08-10T09:00:00.000Z',
+});
+
+// A real fault list is reported by its own length, not by `faultCount` --
+// `19 01`'s count and `19 02`'s list are separate requests and can disagree
+// (a byte group that fails to decode is dropped from the list but not from
+// the count), and the list is what the card actually renders and lets a
+// driver tap into.
+const mismatched = moduleFaultState(freshModule(3), [activeFault, storedFault]);
+if (mismatched.kind !== 'faults' || mismatched.count !== 2) {
+  fail(`a module with 2 decoded faults and faultCount 3 read as ${JSON.stringify(mismatched)}, expected 2 faults`);
+}
+if (mismatched.kind === 'faults' && !mismatched.failingNow) {
+  fail('a fault list containing one failing-now entry should read as failing now');
+}
+
+const bothStored = moduleFaultState(freshModule(1), [storedFault]);
+if (bothStored.kind === 'faults' && bothStored.failingNow) {
+  fail('a fault list with nothing failing now must not read as failing now');
+}
+
+// An honest zero, a count with no list, and no count at all -- exactly what
+// 19 01 alone said, when there is no list to prefer instead.
+if (moduleFaultState(freshModule(0), []).kind !== 'clean') fail('a zero count with no faults should read as clean');
+const unreadable = moduleFaultState(freshModule(2), []);
+if (unreadable.kind !== 'unreadable' || unreadable.count !== 2) {
+  fail(`a nonzero count with no list should read as unreadable with its count, got ${JSON.stringify(unreadable)}`);
+}
+if (moduleFaultState(freshModule(null), []).kind !== 'unknown') {
+  fail('no count and no list should read as unknown, not clean');
+}
+
+// The case the review named: a module that went quiet while still carrying
+// an old nonzero faultCount from before it stopped answering must read as
+// asleep, not as a live refusal to list faults it currently has nothing to
+// say about. `foldScanIntoMap` and the provider's own `mergeFaults` always
+// clear a module's cached fault list in the same step that marks it stale,
+// so a stale module still carrying a fault list is not a shape the app
+// should ever actually produce -- but staleness wins regardless, since it
+// is the more honest thing to say either way.
+const staleWithOldCount: DiscoveredModule = { ...freshModule(2), stale: true };
+if (moduleFaultState(staleWithOldCount, []).kind !== 'asleep') {
+  fail('a stale module carrying an old faultCount must read as asleep, not unreadable');
+}
+const staleWithFaults: DiscoveredModule = { ...freshModule(2), stale: true };
+if (moduleFaultState(staleWithFaults, [activeFault]).kind !== 'asleep') {
+  fail('staleness must win even over a (should-be-impossible) leftover fault list');
+}
+
+console.log('  asleep beats a stale count, a real list is reported by its own length, and the rest fall back to what 19 01 alone said');
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');

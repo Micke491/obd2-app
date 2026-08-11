@@ -1,3 +1,4 @@
+import type { ModuleFault } from '@/lib/obd/uds/faults';
 import { PART_ORDER, type Part } from '@/lib/obd/uds/parts';
 
 export const MODULE_MAP_VERSION = 1;
@@ -23,26 +24,6 @@ export type ModuleMap = {
   discoveredAt: string;
   modules: DiscoveredModule[];
 };
-
-/**
- * Folds a re-verification back into the saved map.
- *
- * A module that answers is confirmed and dated. One that stays quiet is marked
- * stale and kept: modules sleep, and a driver who saw "Airbag" in the list
- * yesterday should not find it silently gone today with nothing to explain it.
- */
-export function mergeAfterVerify(map: ModuleMap, answered: string[], now: string): ModuleMap {
-  const heard = new Set(answered.map((requestId) => requestId.toUpperCase()));
-
-  return {
-    ...map,
-    modules: map.modules.map((entry) =>
-      heard.has(entry.requestId.toUpperCase())
-        ? { ...entry, stale: false, lastSeenAt: now }
-        : { ...entry, stale: true },
-    ),
-  };
-}
 
 /**
  * Folds a completed scan back into the map.
@@ -136,4 +117,55 @@ export function partStaleness(modules: DiscoveredModule[]): PartStaleness {
   const staleCount = modules.filter((module) => module.stale).length;
   if (staleCount === 0) return 'awake';
   return staleCount === modules.length ? 'asleep' : 'partly-asleep';
+}
+
+/**
+ * `Aug 1`, or a hedge for a date that cannot be read at all.
+ *
+ * Shared so a module's card and the checklist row for its part cannot drift:
+ * both are showing the same `lastSeenAt`, and used to format it independently.
+ */
+export function formatLastSeen(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return 'an earlier scan';
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+export type ModuleFaultState =
+  | { kind: 'asleep' }
+  | { kind: 'faults'; count: number; failingNow: boolean }
+  | { kind: 'clean' }
+  | { kind: 'unreadable'; count: number }
+  | { kind: 'unknown' };
+
+/**
+ * What a module's card should say it found, from what was actually learned.
+ *
+ * The order matters and is deliberate:
+ *
+ * 1. Asleep beats everything else. A module goes stale exactly when it was
+ *    asked this run and stayed quiet -- `foldScanIntoMap` marks it stale and
+ *    the caller clears its cached fault list with the same `asked` set, in
+ *    the same step -- so a stale module never has anything fresh to report.
+ *    Checking this first is what stops a module that carries an old nonzero
+ *    `faultCount` from before it went quiet from reading as "Reported N
+ *    faults, but would not list them": a live refusal, when what actually
+ *    happened is that nothing was there to ask.
+ * 2. A real fault list, when there is one, is reported by its own length --
+ *    not by `module.faultCount`. `19 01`'s count and `19 02`'s list are
+ *    separate requests, and a byte group that fails to decode is dropped
+ *    from the list but not from the count, so the two can disagree; the
+ *    list is what a module's card actually renders and lets a driver tap
+ *    into, so it is the number that has to match what is on screen.
+ * 3. Failing that, an honest zero, a count with no list behind it, and no
+ *    count at all are told apart exactly as they always were.
+ */
+export function moduleFaultState(module: DiscoveredModule, faults: ModuleFault[]): ModuleFaultState {
+  if (module.stale) return { kind: 'asleep' };
+  if (faults.length > 0) {
+    return { kind: 'faults', count: faults.length, failingNow: faults.some((fault) => fault.status.failingNow) };
+  }
+  if (module.faultCount === 0) return { kind: 'clean' };
+  if (module.faultCount !== null) return { kind: 'unreadable', count: module.faultCount };
+  return { kind: 'unknown' };
 }

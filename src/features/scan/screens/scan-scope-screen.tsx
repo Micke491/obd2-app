@@ -17,19 +17,13 @@ import { PART_LABELS, type Part } from '@/lib/obd/uds/parts';
 import { useTheme, useThemedStyles, type Theme } from '@/theme';
 
 import { useVehicleScan } from '../hooks/use-vehicle-scan';
-import { groupByPart, partStaleness, type DiscoveredModule } from '../lib/module-map';
-import { buildScanPlan, estimateSeconds, requestIdsForParts } from '../lib/scan-plan';
+import { formatLastSeen, groupByPart, partStaleness, type DiscoveredModule } from '../lib/module-map';
+import { ENGINE_ONLY_SECONDS, buildScanPlan, estimateSeconds, requestIdsForParts } from '../lib/scan-plan';
 
 type Selection = { kind: 'whole' } | { kind: 'engine' } | { kind: 'parts'; parts: Set<Part> };
 
 function formatDuration(seconds: number): string {
   return `${seconds} second${seconds === 1 ? '' : 's'}`;
-}
-
-function formatLastSeen(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return 'an earlier scan';
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 /** What a checklist row says beneath the part name: who is filed under it. */
@@ -83,7 +77,7 @@ export function ScanScopeScreen() {
   }
 
   const wholeSeconds = estimateSeconds(buildScanPlan({ kind: 'whole' }, addressing));
-  const engineSeconds = estimateSeconds(buildScanPlan({ kind: 'engine' }, addressing));
+  const engineSeconds = ENGINE_ONLY_SECONDS;
 
   const groups = map ? groupByPart(map.modules) : [];
   const selectedParts = selection.kind === 'parts' ? selection.parts : new Set<Part>();
