@@ -124,6 +124,7 @@ export function CheckRow({
   hint,
   checked,
   badge,
+  disabled = false,
   onPress,
 }: {
   label: string;
@@ -132,6 +133,9 @@ export function CheckRow({
   /** Small marker after the label, e.g. a status `Pill` — for a fact about
    *  the row that is not itself the selection. */
   badge?: ReactNode;
+  /** Shown, dimmed and inert. A row the car cannot offer still belongs on the
+   *  list: its `hint` is where the reason goes. */
+  disabled?: boolean;
   onPress: () => void;
 }) {
   const theme = useTheme();
@@ -140,9 +144,10 @@ export function CheckRow({
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
       accessibilityRole="checkbox"
-      accessibilityState={{ checked }}
-      style={({ pressed }) => [styles.row, pressed && styles.pressed]}
+      accessibilityState={{ checked, disabled }}
+      style={({ pressed }) => [styles.row, pressed && !disabled && styles.pressed, disabled && styles.rowDisabled]}
     >
       <View style={styles.text}>
         <View style={styles.labelRow}>
@@ -156,9 +161,9 @@ export function CheckRow({
         ) : null}
       </View>
       <MaterialCommunityIcons
-        name={checked ? 'checkbox-marked' : 'checkbox-blank-outline'}
+        name={disabled ? 'minus-box-outline' : checked ? 'checkbox-marked' : 'checkbox-blank-outline'}
         size={22}
-        color={checked ? theme.color.accentInk : theme.color.inkFaint}
+        color={checked && !disabled ? theme.color.accentInk : theme.color.inkFaint}
       />
     </Pressable>
   );
@@ -192,6 +197,7 @@ const createStyles = (t: Theme) =>
       borderColor: t.color.rule,
     },
     pressed: { backgroundColor: t.color.surfaceSunken },
+    rowDisabled: { opacity: 0.45 },
     text: { flex: 1, gap: 1 },
     labelRow: { flexDirection: 'row', alignItems: 'center', gap: t.space.sm },
     value: { maxWidth: '45%', textAlign: 'right' },

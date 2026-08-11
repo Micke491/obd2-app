@@ -14,6 +14,7 @@ import { ScreenHeader } from '@/components/screen-header';
 import { Section } from '@/components/section';
 import { AppText } from '@/components/text';
 import { ModuleGroup } from '@/features/scan/components/module-group';
+import { ScanSheet } from '@/features/scan/components/scan-sheet';
 import { useVehicleScan } from '@/features/scan/hooks/use-vehicle-scan';
 import { availableParts, sortModulesByFaults } from '@/features/scan/lib/module-map';
 import { SEVERITY_LABELS, resolveDtcDetail, type DtcDetail, type DtcSeverity } from '@/lib/obd/dtc';
@@ -80,6 +81,7 @@ export function CodesScreen() {
 
   const hasRead = state === 'read';
   const [filterPart, setFilterPart] = useState<Part | null>(null);
+  const [scanOpen, setScanOpen] = useState(false);
 
   const chips = useMemo(() => (map ? availableParts(map.modules) : []), [map]);
   const activeFilter = filterPart && chips.includes(filterPart) ? filterPart : null;
@@ -262,7 +264,10 @@ export function CodesScreen() {
             ) : null}
 
             {scanBusy ? (
-              <Card onPress={() => router.push('/scan')}>
+              // Not pressable: a scan the driver started is already behind the
+              // scan sheet, and this one is the automatic check that runs on
+              // connect, which there is nowhere useful to send them.
+              <Card>
                 {scanProgress ? (
                   <>
                     <Meter fraction={scanProgress.total ? scanProgress.done / scanProgress.total : 0} />
@@ -337,10 +342,11 @@ export function CodesScreen() {
       <View style={styles.footer}>
         <View style={styles.footerButton}>
           <Button
-            label={hasRead || map ? 'Scan again' : 'Scan the car'}
-            onPress={() => router.push('/scan')}
+            label={hasRead || map ? 'Read again' : 'Read codes'}
+            onPress={() => setScanOpen(true)}
             variant={hasRead || map ? 'secondary' : 'primary'}
             icon="radar"
+            disabled={busy}
           />
         </View>
         {hasRead ? (
@@ -354,6 +360,8 @@ export function CodesScreen() {
           </View>
         ) : null}
       </View>
+
+      <ScanSheet visible={scanOpen} onClose={() => setScanOpen(false)} />
     </Screen>
   );
 }

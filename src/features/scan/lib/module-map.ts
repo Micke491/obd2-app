@@ -67,16 +67,6 @@ export function mapAppliesTo(
   return map.vin === vin && map.protocolId === protocolId;
 }
 
-/** Fixed order, so the results list does not reshuffle between two scans. */
-export function groupByPart(
-  modules: DiscoveredModule[],
-): { part: Part; modules: DiscoveredModule[] }[] {
-  return PART_ORDER.map((part) => ({
-    part,
-    modules: modules.filter((entry) => entry.part === part),
-  })).filter((group) => group.modules.length > 0);
-}
-
 /**
  * The parts worth offering as filter chips: the app's fixed order, narrowed to
  * whatever these particular modules actually cover. Ten chips for a car with

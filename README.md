@@ -46,6 +46,14 @@ Modules found are remembered per VIN and re-verified on connect, so a later
 scan can read just the brakes in about a second. A module that stops answering
 is marked asleep rather than deleted.
 
+**Read codes** asks what to read before it asks the car: the whole car, or any
+combination of engine, brakes, airbags, suspension and the rest. Every part is
+listed every time, including the ones this car cannot offer — a greyed row says
+whether the protocol cannot reach it or a whole-car scan has simply not found it
+yet, which are different problems with different cures. The scan then runs in a
+panel that cannot be dismissed, showing what it is asking and how far along it
+is, with a Stop that keeps whatever has already been read.
+
 The scan reads only. Clearing codes stays where it was: engine module,
 service `04`, nothing else. And no brand-specific data is used or invented
 anywhere — modules are found by sweeping, and named only by what they call

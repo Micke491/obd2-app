@@ -88,19 +88,6 @@ export function askedFromResult(scope: ScanScope, visited: string[]): string[] {
   return scope.kind === 'engine' ? [] : visited;
 }
 
-/**
- * Turns a ticked set of parts into the addresses a `parts` scan needs.
- *
- * This is the conversion `ScanScope`'s own comment above describes: a part is
- * a grouping of whatever modules were found, and two modules can share one, so
- * ticking "Brakes" can mean one address or several. The scope screen ticks
- * parts because that is what a driver recognises; `scan()` wants addresses
- * because that is all a re-read needs.
- */
-export function requestIdsForParts(modules: DiscoveredModule[], parts: Set<Part>): string[] {
-  return modules.filter((module) => parts.has(module.part)).map((module) => module.requestId);
-}
-
 export function estimateSeconds(plan: ScanStep[]): number {
   const seconds = plan.reduce(
     (total, step) => total + (step.kind === 'discover' ? DISCOVER_SECONDS : INTERROGATE_SECONDS),

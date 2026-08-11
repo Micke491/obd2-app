@@ -25,8 +25,13 @@ import {
   askedFromResult,
   buildScanPlan,
   estimateSeconds,
-  requestIdsForParts,
 } from '../src/features/scan/lib/scan-plan';
+import {
+  UNAVAILABLE_REASONS,
+  buildScanMenu,
+  describeModules,
+  requestIdsForMenu,
+} from '../src/features/scan/lib/scan-menu';
 import { AUTHORED, AUTHORED_CODES } from '../src/lib/obd/dtc/authored';
 import { CATALOG_SOURCE_ENTRY_COUNT, DTC_CATALOG } from '../src/lib/obd/dtc/catalog';
 import { isValidCode } from '../src/lib/obd/dtc/derive/parse';
@@ -65,9 +70,9 @@ import { classifyModule } from '../src/lib/obd/uds/classify';
 import { PART_LABELS, PART_ORDER, type Part } from '../src/lib/obd/uds/parts';
 import { isPlausibleVin } from '../src/lib/obd/vehicle-info';
 import {
+  MODULE_MAP_VERSION,
   availableParts,
   foldScanIntoMap,
-  groupByPart,
   mapAppliesTo,
   moduleFaultState,
   partStaleness,
@@ -1268,14 +1273,7 @@ if (mapAppliesTo(saved, null, '6')) fail('a map was applied to a car with no rea
 if (mapAppliesTo(saved, 'WAUZZZ8K9FA123456', '7')) fail('an 11-bit map was applied to a 29-bit bus');
 if (mapAppliesTo(null, 'WAUZZZ8K9FA123456', '6')) fail('a missing map applied to something');
 
-// Results group in a fixed order so the list does not reshuffle between scans.
-const grouped = groupByPart(saved.modules);
-if (grouped.map((entry) => entry.part).join(',') !== 'engine,brakes,restraints') {
-  fail(`grouped as ${grouped.map((entry) => entry.part)}`);
-}
-if (grouped.some((entry) => entry.modules.length === 0)) fail('an empty part group was emitted');
-
-console.log('  a map stays on its own car and its own bus, and groups in a fixed order');
+console.log('  a map stays on its own car and its own bus');
 
 // ── 24. A sweep is not a broken link ─────────────────────────────────────────
 section('Trouble reporting during a sweep');
@@ -1536,24 +1534,36 @@ if (tiedForward !== '761,7E0' || tiedReversed !== '761,7E0') {
   fail(`a tie in fault count should always break the same way on address, got ${tiedForward} / ${tiedReversed}`);
 }
 
+const resultMap: ModuleMap = {
+  version: MODULE_MAP_VERSION,
+  vin: 'WAUZZZ8K9FA123456',
+  protocolId: '6',
+  discoveredAt: '2026-08-01T10:00:00.000Z',
+  modules: resultModules,
+};
+const resultMenu = buildScanMenu(true, 'can11', resultMap);
+
 // Ticking a part with two modules has to give up both addresses, or the
 // second module is silently never asked again.
-const brakesAddresses = requestIdsForParts(resultModules, new Set<Part>(['brakes']));
+const brakesAddresses = requestIdsForMenu(resultMenu, new Set<Part>(['brakes']));
 if (brakesAddresses.join(',') !== '760,761') {
   fail(`ticking brakes gave ${brakesAddresses.join(',')}, expected both brake modules`);
 }
 
-// Two ticked parts is just the union.
-const twoPartAddresses = requestIdsForParts(resultModules, new Set<Part>(['engine', 'restraints']));
-if (twoPartAddresses.join(',') !== '7E0,740') fail(`two ticked parts gave ${twoPartAddresses.join(',')}`);
+// Two ticked parts is just the union. `engine` is not among them: it is its
+// own row, read by mode 03 rather than by address, so it contributes no
+// address here even when ticked.
+const twoPartAddresses = requestIdsForMenu(resultMenu, new Set<Part>(['engine', 'restraints']));
+if (twoPartAddresses.join(',') !== '740') fail(`two ticked parts gave ${twoPartAddresses.join(',')}`);
 
 // Nothing ticked asks nothing -- there is no implicit "everything" fallback.
-if (requestIdsForParts(resultModules, new Set<Part>()).length !== 0) {
+if (requestIdsForMenu(resultMenu, new Set<Part>()).length !== 0) {
   fail('an empty selection should ask for nothing');
 }
 
-// A part nobody has must not throw or invent an address.
-if (requestIdsForParts(resultModules, new Set<Part>(['suspension'])).length !== 0) {
+// Ticking a greyed part must not invent an address for it. The row exists on
+// the menu, so this is reachable state, not a hypothetical.
+if (requestIdsForMenu(resultMenu, new Set<Part>(['suspension'])).length !== 0) {
   fail('a part with no modules should resolve to no addresses');
 }
 
@@ -1668,6 +1678,93 @@ if (moduleFaultState(staleWithFaults, [activeFault]).kind !== 'asleep') {
 }
 
 console.log('  asleep beats a stale count, a real list is reported by its own length, and the rest fall back to what 19 01 alone said');
+
+// ── 31. The scan menu says what it cannot do, and why ────────────────────────
+section('Scan menu availability');
+
+const emptyMap: ModuleMap = {
+  version: MODULE_MAP_VERSION,
+  vin: 'WAUZZZ8K9FA123456',
+  protocolId: '6',
+  discoveredAt: '2026-08-01T10:00:00.000Z',
+  modules: [],
+};
+
+// Every part is listed every time. A menu that hides what it cannot reach
+// leaves the driver guessing whether the app is limited or the car is.
+const NAMED_PART_COUNT = PART_ORDER.filter((part) => part !== 'engine' && part !== 'other').length;
+
+// A car that is not on CAN can be asked about its engine and nothing else.
+const notCan = buildScanMenu(true, null, null);
+if (notCan.engine.unavailable !== null) fail('the engine should be readable on any protocol');
+if (notCan.parts.length !== NAMED_PART_COUNT) {
+  fail(`a non-CAN car listed ${notCan.parts.length} parts, expected all ${NAMED_PART_COUNT}`);
+}
+if (notCan.parts.some((row) => row.unavailable !== 'not-can')) {
+  fail('a non-CAN car should blame the protocol for every part it cannot reach');
+}
+// The whole car is still worth offering: it means everything reachable, which
+// on this car is the engine.
+if (notCan.wholeCar.unavailable !== null) {
+  fail('whole-car should stay available while anything at all is reachable');
+}
+
+// On CAN with nothing found yet, the same rows say something different -- and
+// the difference matters, because this one has a cure.
+const nothingFound = buildScanMenu(true, 'can11', emptyMap);
+if (nothingFound.parts.some((row) => row.unavailable !== 'not-found')) {
+  fail('a CAN car with an empty map should say the parts have not been found yet');
+}
+if (nothingFound.wholeCar.unavailable !== null) fail('whole-car should be offered on a CAN car');
+if (UNAVAILABLE_REASONS['not-found'] === UNAVAILABLE_REASONS['not-can']) {
+  fail('"not found yet" and "protocol cannot reach it" must not read the same');
+}
+
+// With brakes in the map, brakes open up and nothing else does.
+const brakesKnown = resultMenu.parts.filter((row) => row.unavailable === null);
+if (brakesKnown.map((row) => row.part).join(',') !== 'brakes,restraints') {
+  fail(`a map with brakes and restraints offered ${brakesKnown.map((row) => row.part).join(',')}`);
+}
+if (resultMenu.parts.map((row) => row.part).join(',') !== PART_ORDER.filter((p) => p !== 'engine' && p !== 'other').join(',')) {
+  fail('menu rows should follow PART_ORDER');
+}
+
+// `other` is the catch-all for an address that matched no pattern, so
+// "not found yet -- scan the whole car to look for it" would name nothing a
+// driver could act on. It earns a row by having something in it, or not at all.
+if (resultMenu.parts.some((row) => row.part === 'other')) {
+  fail('"other" should not appear while nothing is filed under it');
+}
+const withOther = buildScanMenu(true, 'can11', {
+  ...emptyMap,
+  modules: [
+    { requestId: '7A1', part: 'other', name: null, faultCount: 0, stale: false, lastSeenAt: '2026-08-01T10:00:00.000Z' },
+  ],
+});
+const otherRow = withOther.parts.find((row) => row.part === 'other');
+if (!otherRow) fail('"other" should appear once a module is filed under it');
+if (otherRow && otherRow.unavailable !== null) fail('"other" must never appear greyed out');
+
+// Nothing plugged in: nothing on the menu means anything, and the reason is
+// the link rather than the car, which is not yet known.
+const offline = buildScanMenu(false, null, null);
+if (offline.engine.unavailable !== 'no-link') fail('an unplugged adapter cannot read the engine');
+if (offline.parts.some((row) => row.unavailable !== 'no-link')) {
+  fail('an unplugged adapter should blame the link, not the protocol');
+}
+if (offline.wholeCar.unavailable !== 'no-link') {
+  fail('whole-car should grey out when there is nothing reachable at all');
+}
+
+// A row's hint names who is under it, and says which of them have gone quiet.
+const brakeRow = resultMenu.parts.find((row) => row.part === 'brakes');
+const brakeHint = brakeRow ? describeModules(brakeRow.modules) : '';
+if (!brakeHint.includes('760') || !brakeHint.includes('Rear brake module')) {
+  fail(`a part's hint should name its modules, got "${brakeHint}"`);
+}
+if (!brakeHint.includes('asleep')) fail('a stale module should be marked asleep in the hint');
+
+console.log('  every part is listed, greyed rows carry the reason, and "other" only shows when it holds something');
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');
