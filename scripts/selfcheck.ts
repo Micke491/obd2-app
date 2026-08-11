@@ -43,6 +43,7 @@ import { acceptsReply, linkReplyHealth, type LinkReplyHealth } from '../src/lib/
 import {
   addressingFor,
   admitsResponse,
+  restoreAddressing,
   sweepLinkSettings,
   sweepTargets,
 } from '../src/lib/obd/uds/addressing';
@@ -72,7 +73,7 @@ import {
   type DiscoveredModule,
   type ModuleMap,
 } from '../src/features/scan/lib/module-map';
-import { MAX_CONSECUTIVE_ADAPTER_THROWS, adapterLikelyDead } from '../src/features/scan/lib/run-scan';
+import { MAX_CONSECUTIVE_ADAPTER_THROWS, adapterLikelyDead, probeReached } from '../src/features/scan/lib/run-scan';
 import {
   UNITS,
   UNIT_PRESETS,
@@ -878,6 +879,41 @@ for (const addressing of ['can11', 'can29'] as const) {
 const bandFilters = sweepLinkSettings('can29').filter((setting) => /ATC[FM]/.test(setting.set));
 if (bandFilters.length !== 0) fail('29-bit should not set the band filter');
 
+// `sweepLinkSettings` is only what is set once, before the sweep starts.
+// `visit()` sets ATSH -- and, on 29-bit, ATCRA -- again for every address for
+// the whole sweep's duration, which a restore audit that only walks
+// `sweepLinkSettings` never sees. That blind spot is exactly how a sweep
+// used to finish with the header still pointed at whichever address answered
+// last, silently sending every later OBD request there instead of to the
+// functional broadcast. `restoreAddressing` is the fix, checked here on its
+// own terms: a command list, not a wired-up call, so this proves the
+// commands are right, not that `run-scan.ts` sends them -- that part is
+// verified by reading the `finally` block, the same way the rest of
+// `runScan`'s orchestration has no direct coverage here either.
+for (const addressing of ['can11', 'can29'] as const) {
+  const restore = restoreAddressing(addressing);
+  if (restore.length === 0) fail(`${addressing} has no addressing restore at all`);
+  for (const command of restore) {
+    if (!command.startsWith('AT')) fail(`"${command}" is not an AT command`);
+  }
+
+  const header = restore.find((command) => command.startsWith('ATSH'));
+  if (!header) {
+    fail(`${addressing} restore never puts the transmit header back`);
+  } else {
+    const target = header.slice(4);
+    const expected = addressing === 'can11' ? '7DF' : '18DB33F1';
+    if (target !== expected) {
+      fail(`${addressing} restore sets the header to ${target}, not the functional broadcast ${expected}`);
+    }
+  }
+
+  // ATAR is what undoes a per-address ATCRA, the same way it undoes the
+  // upfront band filter above -- without it the adapter stays listening only
+  // for whichever address it was last told to expect a reply from.
+  if (!restore.includes('ATAR')) fail(`${addressing} restore does not reopen the receive filter`);
+}
+
 console.log(`  ${eleven.length} addresses per sweep`);
 
 // ── 17. A car that will not answer is told which fault to go and fix ─────────
@@ -1252,6 +1288,29 @@ if (!adapterLikelyDead(MAX_CONSECUTIVE_ADAPTER_THROWS + 1)) {
 }
 
 console.log('  a run of thrown commands, not of silence, is what calls a sweep off early');
+
+// ── 25b. A silent module is not the same as an address never reached ────────
+section('What counts as having reached an address');
+
+// The exact ambiguity this exists to resolve: `ask()` hands back the same
+// empty string whether the command threw or the module simply is not there,
+// and `parseUdsReply('')` reads identically to `parseUdsReply('NO DATA')` --
+// both `'silent'`. Only `threw` tells them apart, which is why `visit()`
+// cannot make this call from the parsed reply alone.
+if (!probeReached(false, 'silent')) fail('a genuine NO DATA should count as reached');
+if (probeReached(true, 'silent')) {
+  fail('a thrown probe must not count as reached just because it parses the same as NO DATA');
+}
+// A module that actually answered -- with data or a refusal -- was obviously
+// reached.
+if (!probeReached(false, 'positive')) fail('a positive reply should count as reached');
+if (!probeReached(false, 'negative')) fail('a negative reply should count as reached');
+// A raw adapter fault is the adapter's own trouble, not the module's answer,
+// even though nothing threw to produce it.
+if (probeReached(false, 'unusable')) fail('a raw CAN ERROR/BUFFER FULL reply must not count as reached');
+if (probeReached(true, 'unusable')) fail('a thrown probe must not count as reached');
+
+console.log('  a thrown command is never mistaken for a module that genuinely said nothing');
 
 // ── 26. Folding a scan back never deletes what it didn't reach ───────────────
 section('Folding a scan into the map');

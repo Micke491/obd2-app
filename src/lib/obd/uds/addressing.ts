@@ -57,6 +57,29 @@ export function sweepTargets(addressing: CanAddressing): SweepTarget[] {
   return addressing === 'can11' ? targets11() : targets29();
 }
 
+/**
+ * Puts the transmit header back to a broadcast address once the sweep is
+ * done setting it per-address in `visit()`.
+ *
+ * `sweepLinkSettings` only covers what is set once, before the loop starts.
+ * `ATSH` (and, on 29-bit, `ATCRA`) is set again for every address inside the
+ * loop, so after the last one the adapter is left pointed at whatever
+ * answered last -- `0x7FF` after a completed 11-bit sweep, since discovery
+ * runs legislated-first then ascending. Every OBD request sent after that
+ * would go to that one address instead of the functional broadcast, which is
+ * silent and indistinguishable from "no faults" to code that has no reason to
+ * suspect the header is wrong.
+ *
+ * `ATAR` reopens the receive filter, the same restore `sweepLinkSettings`
+ * already uses for `ATCF`/`ATCM` -- it undoes a per-address `ATCRA` exactly
+ * as it undoes the band filter, so 29-bit needs it here even though it never
+ * set the band filter in the first place.
+ */
+export function restoreAddressing(addressing: CanAddressing): string[] {
+  const header = addressing === 'can11' ? hex3(BROADCAST_11) : `18DB${hex2(BROADCAST_29)}F1`;
+  return [`ATSH${header}`, 'ATAR'];
+}
+
 /** Filter and mask that admit the whole diagnostic band and nothing else. */
 const BAND = 0x700;
 
