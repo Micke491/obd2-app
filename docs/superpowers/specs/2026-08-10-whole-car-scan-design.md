@@ -52,7 +52,7 @@ modules store is brand-specific, and this app will not invent meanings for it.
 | Decision | Chosen | Rejected |
 |---|---|---|
 | Module discovery | Sweep and see who answers | Per-brand address tables |
-| Address coverage | All 256 of `0x700`–`0x7FF` | A curated shortlist that is silently incomplete |
+| Address coverage | 255 of `0x700`–`0x7FF`, excluding the broadcast | A curated shortlist that is silently incomplete |
 | Scan scope UI | Whole car, engine only, or picked parts | Depth-only switch |
 | Parts list | Earned by one sweep, then remembered per VIN and re-verified on connect | Rebuilt every session; or trusted forever without re-checking |
 | Vehicle identity | Manufacturer, country, year — the standardised characters only | A model guess from the manufacturer-defined characters |
@@ -96,15 +96,26 @@ speed.
 ### Link settings
 
 Set before the sweep and restored in a `finally` on every exit path, including
-abort and adapter loss. The restore values are the ones
-`ADAPTER_INIT_SEQUENCE` establishes.
+abort and adapter loss. `ATCF`/`ATCM`/`ATST19`/`ATAT0` are restored to the
+values `ADAPTER_INIT_SEQUENCE` establishes; `ATSH` and `ATCRA` are restored to
+the functional broadcast address, because nothing set them before the sweep
+started -- there is no earlier adapter default to fall back to.
 
 | Command | Why | Restored to |
 |---|---|---|
+| `ATSH<addr>` | Transmit header, set once per address for the whole sweep | `ATSH7DF` (11-bit) / `ATSH18DB33F1` (29-bit) |
+| `ATCRA<addr>` | Receive filter, set once per address (29-bit only) | `ATAR` |
 | `ATCF700` | Receive filter (11-bit only) | `ATAR` |
 | `ATCM700` | Receive mask (11-bit only) | `ATAR` |
 | `ATST19` | ~102 ms reply window (`0x19` × 4.096 ms); most addresses are silent | `ATSTFF` |
 | `ATAT0` | Fixed timing | `ATAT1` |
+
+`ATSH` and `ATCRA` are set again for every address in Phase 1, not once before
+the loop like the rest of this table -- which is exactly why leaving them out
+of a restore audit built only from this table's own rows is so easy to do
+without noticing, and why they matter more than any other row in it: every
+OBD request sent after the sweep, on any screen, depends on the header having
+been put back.
 
 AT parameters are hexadecimal, so `ATST19` is 25 × 4.096 ms. Commands are
 written without spaces, matching `ADAPTER_INIT_SEQUENCE`.
@@ -138,6 +149,17 @@ already, with no change to `reply-match.ts`:
 Nothing is lost. A module is identified by the address the app asked, which is
 what a targeted re-read needs; the responder's own ID was only ever going to be
 decoration.
+
+This is not entirely free, and the trade is worth writing down. With headers
+off and 255 near-identical `19 01 AF` probes sent one after another,
+`acceptsReply` can only pair a reply with the command waiting for it by its
+`59` mode byte -- there is no header left to check it against. A module that
+answers just after its own probe's window has closed can therefore be
+accepted as the *next* address's reply instead of counted as a timeout at the
+address that actually asked. `ATST19` keeps that window to about 100ms, which
+makes it narrow, and headers-on would make this strictly worse, not better --
+every reply in the sweep would be unmatchable instead of occasionally
+mismatched. Accepted as a residual, not fixed.
 
 The filter is the piece that makes this work without brand data. An ELM327
 accepts a frame when `(id & mask) == (filter & mask)`, so mask `0x700` with
@@ -401,10 +423,8 @@ device, matching how the rest of this app's logic is checked.
 **Services**
 - positive `59 01` parsed to a count; `59 02` to a fault list
 - each NRC routed correctly, including `0x11` to the KWP fallback
-- multi-frame replies with headers on, which is a frame shape the existing
-  parser has never seen
-- a reply from an address other than the one asked is attributed to its real
-  responder, not the request
+- multi-frame `19 02` replies, the ISO-TP shape a real multi-fault list
+  arrives in
 
 **Faults**
 - 4-byte decoding against known samples, including that bytes 1–2 through
