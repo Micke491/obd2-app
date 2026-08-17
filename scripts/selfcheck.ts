@@ -37,7 +37,13 @@ import { CATALOG_SOURCE_ENTRY_COUNT, DTC_CATALOG } from '../src/lib/obd/dtc/cata
 import { isValidCode } from '../src/lib/obd/dtc/derive/parse';
 import { parseDtcList } from '../src/lib/obd/dtc/parser';
 import { resolveDtcDetail } from '../src/lib/obd/dtc/resolve';
-import { parseMonitorTests } from '../src/lib/obd/mode06';
+import {
+  FAMILY_LABELS,
+  FAMILY_ORDER,
+  describeMonitor,
+  parseMonitorTests,
+  type MonitorFamily,
+} from '../src/lib/obd/mode06';
 import { PID_DEFINITIONS } from '../src/lib/obd/pids';
 import { PROTOCOL_NAMES, PROTOCOL_SWEEP, describeProtocolReply } from '../src/lib/obd/protocols';
 import {
@@ -1834,6 +1840,68 @@ const underFloor = parseMonitorTests('46' + '2185010010' + '0032' + 'FFFF');
 if (underFloor[0]?.passed !== false) fail('a value below its only bound has failed');
 
 console.log('  one-sided, two-sided and absent limits are each told apart');
+
+// ── 35. Mode 06 monitor names carry their provenance ─────────────────────────
+section('Mode 06 monitor names carry their provenance');
+
+// The table wins where it has an entry.
+const namedMonitor = describeMonitor(0x21);
+if (namedMonitor.name !== 'Catalyst bank 1') fail(`0x21 is catalyst bank 1, got "${namedMonitor.name}"`);
+if (namedMonitor.confidence !== 'named') fail('a table entry is a named monitor');
+
+// Outside the table, position in the standard is arithmetic, not guesswork --
+// and the arithmetic has to agree with the table where the two overlap.
+const derivedFromTable = describeMonitor(0x05);
+if (derivedFromTable.name !== 'O2 sensor bank 2 sensor 1') {
+  fail(`the table and the arithmetic disagree at 0x05: "${derivedFromTable.name}"`);
+}
+
+const bank3 = describeMonitor(0x0a);
+if (!bank3.name.includes('bank 3') || !bank3.name.includes('sensor 2')) {
+  fail(`0x0A is bank 3 sensor 2, got "${bank3.name}"`);
+}
+if (bank3.confidence !== 'derived') fail('a name worked out from the range is derived, not named');
+if (bank3.family !== 'o2') fail('0x0A belongs to the O2 family');
+
+const cylinder9 = describeMonitor(0xa9);
+if (!cylinder9.name.includes('cylinder 9')) fail(`0xA9 is misfire cylinder 9, got "${cylinder9.name}"`);
+if (cylinder9.family !== 'misfire') fail('0xA9 belongs to the misfire family');
+
+const heater = describeMonitor(0x43);
+if (!heater.name.toLowerCase().includes('heater')) fail(`0x43 is an O2 heater, got "${heater.name}"`);
+if (heater.family !== 'o2-heater') fail('0x43 belongs to the heater family');
+
+// Manufacturer territory is reported, never named.
+const vendorMonitor = describeMonitor(0xe1);
+if (vendorMonitor.confidence !== 'manufacturer') fail('0xE1 is manufacturer-defined');
+if (vendorMonitor.family !== 'manufacturer') fail('0xE1 is filed under manufacturer');
+if (/bank|cylinder|catalyst/i.test(vendorMonitor.name)) {
+  fail(`a manufacturer MID must not be given a guessed name: "${vendorMonitor.name}"`);
+}
+
+// A gap in the standard is admitted rather than papered over.
+const gapMonitor = describeMonitor(0x7a);
+if (gapMonitor.confidence !== 'unlisted') fail('0x7A is in no known range and must say so');
+if (!gapMonitor.name.includes('7A')) fail('an unlisted monitor still shows its number');
+
+// Every family has a label and a place in the order, so the screen can never
+// be handed a family it has no heading for.
+for (const family of FAMILY_ORDER) {
+  if (!FAMILY_LABELS[family]) fail(`family ${family} has no label`);
+}
+const allFamilies = Object.keys(FAMILY_LABELS) as MonitorFamily[];
+for (const family of allFamilies) {
+  if (!FAMILY_ORDER.includes(family)) fail(`family ${family} has a label but no place in the order`);
+}
+
+// A decoded test carries the provenance through, not just the name.
+const provenanced = parseMonitorTests('46' + 'E185010064' + '0032' + '00FA');
+if (provenanced[0]?.confidence !== 'manufacturer') {
+  fail('a decoded test should carry its monitor provenance');
+}
+if (provenanced[0]?.family !== 'manufacturer') fail('a decoded test should carry its family');
+
+console.log(`  ${FAMILY_ORDER.length} families; named, derived, manufacturer and unlisted all distinguished`);
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');

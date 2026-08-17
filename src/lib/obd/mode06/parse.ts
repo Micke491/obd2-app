@@ -1,4 +1,5 @@
 import { extractPayload } from '../protocol';
+import { describeMonitor, type MonitorConfidence, type MonitorFamily } from './monitor-ids';
 
 /** Which bounds the car actually supplied for a test. */
 export type TestLimit = 'both' | 'upper' | 'lower' | 'none';
@@ -6,6 +7,9 @@ export type TestLimit = 'both' | 'upper' | 'lower' | 'none';
 export type MonitorTest = {
   monitorId: number;
   monitorName: string;
+  /** How the name was arrived at — a table entry, arithmetic, or neither. */
+  confidence: MonitorConfidence;
+  family: MonitorFamily;
   testId: number;
   value: number;
   min: number;
@@ -17,37 +21,6 @@ export type MonitorTest = {
   /** Where the value sits between its bounds, 0–1. Null without both. */
   fraction: number | null;
   passed: boolean;
-};
-
-const OBDMID_NAMES: Record<number, string> = {
-  0x01: 'O2 sensor bank 1 sensor 1',
-  0x02: 'O2 sensor bank 1 sensor 2',
-  0x03: 'O2 sensor bank 1 sensor 3',
-  0x04: 'O2 sensor bank 1 sensor 4',
-  0x05: 'O2 sensor bank 2 sensor 1',
-  0x06: 'O2 sensor bank 2 sensor 2',
-  0x07: 'O2 sensor bank 2 sensor 3',
-  0x08: 'O2 sensor bank 2 sensor 4',
-  0x21: 'Catalyst bank 1',
-  0x22: 'Catalyst bank 2',
-  0x31: 'EGR bank 1',
-  0x32: 'EGR bank 2',
-  0x39: 'EVAP monitor (cap off)',
-  0x3a: 'EVAP monitor (0.090")',
-  0x3b: 'EVAP monitor (0.040")',
-  0x3c: 'EVAP monitor (0.020")',
-  0x3d: 'Purge flow monitor',
-  0x41: 'O2 heater bank 1 sensor 1',
-  0x42: 'O2 heater bank 1 sensor 2',
-  0x81: 'Misfire general data',
-  0xa1: 'Misfire cylinder 1',
-  0xa2: 'Misfire cylinder 2',
-  0xa3: 'Misfire cylinder 3',
-  0xa4: 'Misfire cylinder 4',
-  0xa5: 'Misfire cylinder 5',
-  0xa6: 'Misfire cylinder 6',
-  0xa7: 'Misfire cylinder 7',
-  0xa8: 'Misfire cylinder 8',
 };
 
 /**
@@ -110,9 +83,13 @@ export function parseMonitorTests(hex: string): MonitorTest[] {
     const limit: TestLimit =
       hasLower && hasUpper ? 'both' : hasUpper ? 'upper' : hasLower ? 'lower' : 'none';
 
+    const described = describeMonitor(monitorId);
+
     tests.push({
       monitorId,
-      monitorName: OBDMID_NAMES[monitorId] ?? `Monitor 0x${monitorId.toString(16).toUpperCase()}`,
+      monitorName: described.name,
+      confidence: described.confidence,
+      family: described.family,
       testId,
       value,
       min,
