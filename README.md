@@ -31,6 +31,13 @@ call anywhere in the app.
   was recorded.
 - **Readiness monitors** — which self-tests have finished, for both spark and
   compression ignition engines.
+- **On-board test results** — the measurements behind those self-tests, and the
+  limits the car judges them against, so a test passing at ninety-odd percent
+  of its limit reads differently from one passing comfortably. Grouped by
+  system and collapsed, with anything failing lifted to the top. The app asks
+  the car which tests it has rather than guessing, names the monitors the
+  standard lays out regularly, and reports the rest by number instead of
+  inventing a name for them.
 - **Code lookup** — search any code with no car attached, for when the number
   is written on a garage invoice.
 
@@ -106,10 +113,10 @@ npm run typecheck   # tsc --noEmit, strict
 npm run check       # the self-check suite
 ```
 
-`npm run check` runs `scripts/selfcheck.ts` — around 1,700 lines of assertions
+`npm run check` runs `scripts/selfcheck.ts` — around 2,000 lines of assertions
 over the protocol layer, the DTC catalog, the handshake plan, the UDS
-addressing arithmetic, fault decoding, module classification, scan plans and
-the module map. It needs no adapter, no car and no device, which is the point:
+addressing arithmetic, fault decoding, module classification, scan plans, the
+module map and the mode 06 monitor tests. It needs no adapter, no car and no device, which is the point:
 all the reasoning lives in pure functions that can be checked on a laptop.
 
 ## Layout
@@ -125,7 +132,7 @@ src/
     sensors/           the full sensor list
     dtc/               trouble codes and their detail pages
     freeze-frame/      the saved snapshot
-    monitors/          readiness
+    monitors/          readiness and the on-board test walk
     scan/              scan scope, plans, the module map and its storage
     vehicle-info/      VIN and identity
     settings/          preferences and About
@@ -133,6 +140,7 @@ src/
   lib/
     obd/               protocol, PIDs, monitors, freeze frame, vehicle info
     obd/dtc/           the code catalog, authored entries, derivation rules
+    obd/mode06/        monitor ids, test ids, the support-mask plan, record decoding
     obd/uds/           addressing, services, fault decoding, module classification
     storage/           AsyncStorage-backed settings
     units/             quantities, conversion, formatting
