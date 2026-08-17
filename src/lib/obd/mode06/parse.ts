@@ -1,5 +1,6 @@
 import { extractPayload } from '../protocol';
 import { describeMonitor, type MonitorConfidence, type MonitorFamily } from './monitor-ids';
+import { describeTest } from './test-ids';
 
 /** Which bounds the car actually supplied for a test. */
 export type TestLimit = 'both' | 'upper' | 'lower' | 'none';
@@ -11,6 +12,9 @@ export type MonitorTest = {
   confidence: MonitorConfidence;
   family: MonitorFamily;
   testId: number;
+  /** Distinguishes the several tests one monitor can report. */
+  testName: string;
+  testManufacturerDefined: boolean;
   value: number;
   min: number;
   max: number;
@@ -84,6 +88,7 @@ export function parseMonitorTests(hex: string): MonitorTest[] {
       hasLower && hasUpper ? 'both' : hasUpper ? 'upper' : hasLower ? 'lower' : 'none';
 
     const described = describeMonitor(monitorId);
+    const describedTest = describeTest(testId);
 
     tests.push({
       monitorId,
@@ -91,6 +96,8 @@ export function parseMonitorTests(hex: string): MonitorTest[] {
       confidence: described.confidence,
       family: described.family,
       testId,
+      testName: describedTest.name,
+      testManufacturerDefined: describedTest.manufacturerDefined,
       value,
       min,
       max,

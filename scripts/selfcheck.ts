@@ -41,6 +41,7 @@ import {
   FAMILY_LABELS,
   FAMILY_ORDER,
   describeMonitor,
+  describeTest,
   parseMonitorTests,
   type MonitorFamily,
 } from '../src/lib/obd/mode06';
@@ -1902,6 +1903,29 @@ if (provenanced[0]?.confidence !== 'manufacturer') {
 if (provenanced[0]?.family !== 'manufacturer') fail('a decoded test should carry its family');
 
 console.log(`  ${FAMILY_ORDER.length} families; named, derived, manufacturer and unlisted all distinguished`);
+
+// ── 36. Mode 06 test ids are distinguished, not invented ─────────────────────
+section('Mode 06 test ids are distinguished, not invented');
+
+const vendorTid = describeTest(0x81);
+if (!vendorTid.manufacturerDefined) fail('TID 0x80 and up is manufacturer-defined');
+if (!vendorTid.name.includes('81')) fail('a manufacturer test id still shows its number');
+
+const standardTid = describeTest(0x01);
+if (standardTid.manufacturerDefined) fail('TID 0x01 is in the standard range');
+
+// The case this exists for: per-cylinder misfire reports several tests under
+// one monitor, and they used to render as identical rows.
+const sameMonitor = parseMonitorTests('46' + 'A101010064003200C8' + 'A102010078003200C8');
+if (sameMonitor.length !== 2) fail('two tests under one monitor should both decode');
+if (sameMonitor[0]?.monitorName !== sameMonitor[1]?.monitorName) {
+  fail('both records are the same monitor and should share its name');
+}
+if (sameMonitor[0]?.testName === sameMonitor[1]?.testName) {
+  fail('two different test ids must not produce the same description');
+}
+
+console.log('  tests under one monitor are told apart, and vendor ids are not named');
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');
