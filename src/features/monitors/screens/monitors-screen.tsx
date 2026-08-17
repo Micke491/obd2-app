@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 
@@ -8,7 +8,9 @@ import { Screen } from '@/components/screen';
 import { Section } from '@/components/section';
 import { AppText } from '@/components/text';
 import { useObdConnection } from '@/features/connection/hooks/use-obd-connection';
-import { parseMonitorTests, type MonitorTest } from '@/lib/obd/mode06';
+import { TestGroup, TestRow } from '@/features/monitors/components/test-group';
+import { runMode06, type Mode06Result } from '@/features/monitors/lib/run-mode06';
+import { FAMILY_ORDER } from '@/lib/obd/mode06';
 import { parseReadiness, type MonitorState, type ReadinessStatus } from '@/lib/obd/monitors';
 import { useTheme, useThemedStyles, type Theme } from '@/theme';
 
@@ -23,9 +25,9 @@ export function MonitorsScreen() {
   const styles = useThemedStyles(createStyles);
   const { client } = useObdConnection();
   const [readiness, setReadiness] = useState<ReadinessStatus | null>(null);
-  const [tests, setTests] = useState<MonitorTest[]>([]);
+  const [result, setResult] = useState<Mode06Result | null>(null);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [loading, setLoading] = useState(false);
-  const [mode06Supported, setMode06Supported] = useState(true);
 
   const load = useCallback(async () => {
     if (!client) return;
@@ -38,18 +40,11 @@ export function MonitorsScreen() {
       setReadiness(null);
     }
 
+    setProgress({ done: 0, total: 0 });
     try {
-      const results = await client.query('0600', 6000);
-      if (results.ok) {
-        setTests(parseMonitorTests(results.hex));
-        setMode06Supported(true);
-      } else {
-        setTests([]);
-        setMode06Supported(false);
-      }
+      setResult(await runMode06(client, (done, total) => setProgress({ done, total })));
     } catch {
-      setTests([]);
-      setMode06Supported(false);
+      setResult(null);
     }
 
     setLoading(false);
@@ -63,6 +58,17 @@ export function MonitorsScreen() {
     state === 'complete' ? theme.color.ok : state === 'incomplete' ? theme.color.warn : theme.color.inkFaint;
 
   const notReady = readiness?.monitors.filter((monitor) => monitor.state === 'incomplete').length ?? 0;
+
+  const tests = result?.tests ?? [];
+  const failing = tests.filter((test) => !test.passed);
+  const grouped = useMemo(
+    () =>
+      tests.reduce<Record<string, typeof tests>>((acc, test) => {
+        (acc[test.family] ??= []).push(test);
+        return acc;
+      }, {}),
+    [tests],
+  );
 
   return (
     <Screen edges={{ top: false }}>
@@ -118,42 +124,57 @@ export function MonitorsScreen() {
         <Section
           title="On-board test results"
           hint="The actual measurements behind those tests, with the limits the car judges them against."
+          meta={tests.length > 0 ? `${tests.length} results` : undefined}
         >
-          {!mode06Supported ? (
+          {loading && result === null ? (
+            <AppText variant="caption" tone="muted">
+              Reading…
+            </AppText>
+          ) : result === null || result.advertised === 0 ? (
             <AppText variant="caption" tone="muted">
               This car does not report detailed test results.
             </AppText>
-          ) : tests.length === 0 ? (
-            <AppText variant="caption" tone="muted">
-              {loading ? 'Reading…' : 'No test results reported yet.'}
-            </AppText>
           ) : (
-            tests.map((test) => (
-              <View key={`${test.monitorId}-${test.testId}`} style={styles.row}>
-                <View style={styles.testText}>
-                  <AppText variant="body" numberOfLines={1}>
-                    {test.monitorName}
-                  </AppText>
-                  <AppText variant="caption" tone="faint">
-                    {test.value.toFixed(2)} {test.unit} · allowed {test.min.toFixed(2)}–
-                    {test.max.toFixed(2)}
-                    {test.scaled ? '' : ' (raw counts)'}
-                  </AppText>
-                </View>
-                <AppText
-                  variant="eyebrow"
-                  style={{ color: test.passed ? theme.color.ok : theme.color.danger }}
-                >
-                  {test.passed ? 'Pass' : 'Fail'}
+            <>
+              {/* A failure lifted out of its group, so it cannot hide inside a
+                  collapsed heading nobody thought to open. */}
+              {failing.map((test) => (
+                <TestRow key={`failing-${test.monitorId}-${test.testId}`} test={test} />
+              ))}
+
+              {FAMILY_ORDER.filter((family) => grouped[family]?.length).map((family) => (
+                <TestGroup key={family} family={family} tests={grouped[family]} />
+              ))}
+
+              {result.silent > 0 ? (
+                <AppText variant="caption" tone="muted" style={styles.note}>
+                  {result.silent} test{result.silent === 1 ? '' : 's'} the car listed but did not
+                  answer.
                 </AppText>
-              </View>
-            ))
+              ) : null}
+
+              {result.aborted ? (
+                <AppText variant="caption" tone="warn" style={styles.note}>
+                  The adapter stopped responding partway through, so this list is incomplete.
+                </AppText>
+              ) : null}
+            </>
           )}
         </Section>
       </ScrollView>
 
       <View style={styles.footer}>
-        <Button label="Read again" onPress={() => void load()} variant="secondary" busy={loading} icon="refresh" />
+        <Button
+          label={
+            loading && progress.total > 0
+              ? `Reading ${progress.done} of ${progress.total}`
+              : 'Read again'
+          }
+          onPress={() => void load()}
+          variant="secondary"
+          busy={loading}
+          icon="refresh"
+        />
       </View>
     </Screen>
   );
@@ -174,6 +195,6 @@ const createStyles = (t: Theme) =>
       borderBottomColor: t.color.rule,
     },
     name: { flex: 1 },
-    testText: { flex: 1, gap: 1 },
+    note: { marginTop: t.space.sm },
     footer: { paddingVertical: t.space.md },
   });
