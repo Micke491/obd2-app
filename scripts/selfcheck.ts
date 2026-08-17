@@ -40,11 +40,17 @@ import { resolveDtcDetail } from '../src/lib/obd/dtc/resolve';
 import {
   FAMILY_LABELS,
   FAMILY_ORDER,
+  MODE06_SUPPORT_BLOCKS,
   describeMonitor,
   describeTest,
+  monitorIdsFrom,
   parseMonitorTests,
+  parseSupportedMids,
+  supportRequest,
+  testRequest,
   type MonitorFamily,
 } from '../src/lib/obd/mode06';
+import { runMode06, type Mode06Client } from '../src/features/monitors/lib/run-mode06';
 import { PID_DEFINITIONS } from '../src/lib/obd/pids';
 import { PROTOCOL_NAMES, PROTOCOL_SWEEP, describeProtocolReply } from '../src/lib/obd/protocols';
 import {
@@ -1927,11 +1933,116 @@ if (sameMonitor[0]?.testName === sameMonitor[1]?.testName) {
 
 console.log('  tests under one monitor are told apart, and vendor ids are not named');
 
-// ── Result ──────────────────────────────────────────────────────────────────
-console.log('');
-if (failures === 0) {
-  console.log('All checks passed.');
-} else {
-  console.error(`${failures} check(s) failed.`);
-  process.exit(1);
+// ── 37. Mode 06 asks for tests, not for the support mask ─────────────────────
+section('Mode 06 asks for tests, not for the support mask');
+
+// THE REGRESSION. 0600 answers with a bitmask, not a test record. Feeding that
+// answer to the record parser is what made this feature return nothing on
+// every car, for every release it has shipped in: four mask bytes cannot fill
+// a nine-byte record, so the loop never ran and the screen said "no test
+// results reported yet" to people whose cars had plenty.
+const maskReply = '4600BFFFC000';
+if (parseMonitorTests(maskReply).length !== 0) {
+  fail('a support mask must never decode as test records');
 }
+
+const maskMids = parseSupportedMids(maskReply, '00');
+if (maskMids.length === 0) fail('the support mask should expand to monitor ids');
+if (!maskMids.includes('01')) fail(`0xBF sets the top bit, so MID 01 is supported: got ${maskMids.join(',')}`);
+
+// The chain marker is not a monitor and must not be asked for.
+if (monitorIdsFrom(['01', '20', 'A1']).join(',') !== '01,A1') {
+  fail('a block id is a chain marker, not a monitor to request');
+}
+
+// Mode 06 ids run to 0xFF, which the mode 01 block list stops short of.
+if (!MODE06_SUPPORT_BLOCKS.includes('E0')) fail('mode 06 needs the E0 support block');
+
+if (supportRequest('20') !== '0620') fail('a support request is 06 then the block');
+if (testRequest('A1') !== '06A1') fail('a test request is 06 then the monitor id');
+
+console.log(`  the mask expands to ${maskMids.length} monitor ids and is never read as a test`);
+
+// ── 38. Mode 06 walk survives a car that half answers ────────────────────────
+const answered = (hex: string) => ({ ok: true as const, hex, frames: [hex], declaredBytes: null });
+const declined = (reason: string) => ({ ok: false as const, reason });
+
+/** One nine-byte record: MID, TID 0x85, scaling 0x01, value 100, 50 to 250. */
+const oneRecord = (mid: string) => answered('46' + mid + '85' + '01' + '0064' + '0032' + '00FA');
+
+async function checkMode06Walk() {
+  section('Mode 06 walk survives a car that half answers');
+
+  // Advertises MIDs 01 and 02, answers the first, refuses the second.
+  const halfAnswering: Mode06Client = {
+    async query(command: string) {
+      if (command === '0600') return answered('4600C0000000');
+      if (command === '0601') return oneRecord('01');
+      return declined('No data');
+    },
+  };
+
+  const walked = await runMode06(halfAnswering);
+  if (walked.advertised !== 2) fail(`two bits set means two monitors, got ${walked.advertised}`);
+  if (walked.tests.length !== 1) fail(`one answered monitor means one test, got ${walked.tests.length}`);
+  if (walked.silent !== 1) fail(`the refused monitor should be counted, got ${walked.silent}`);
+  if (walked.aborted) fail('a car that answered should not read as aborted');
+
+  // The walk follows the chain rather than stopping at the first block.
+  const chained: Mode06Client = {
+    async query(command: string) {
+      // 0x00000001 sets only the last bit: MID 20, which is the next block.
+      if (command === '0600') return answered('460000000001');
+      if (command === '0620') return answered('462080000000');
+      if (command === '0621') return oneRecord('21');
+      return declined('No data');
+    },
+  };
+
+  const followed = await runMode06(chained);
+  if (followed.tests.length !== 1) fail('the walk should follow the chain into the next block');
+  if (followed.advertised !== 1) {
+    fail(`the chain marker itself is not a monitor: advertised ${followed.advertised}`);
+  }
+
+  // An adapter that has fallen off the bus is not a car with nothing to say.
+  const deadAdapter: Mode06Client = {
+    async query() {
+      return declined('CAN bus error');
+    },
+  };
+
+  const gaveUp = await runMode06(deadAdapter);
+  if (!gaveUp.aborted) fail('a controller fault must abort the walk, not read as an empty car');
+
+  // A car that simply does not implement mode 06 is neither aborted nor silent.
+  const noMode06: Mode06Client = {
+    async query() {
+      return declined('The car does not support this service');
+    },
+  };
+
+  const unsupported = await runMode06(noMode06);
+  if (unsupported.aborted) fail('an unsupported service is not an adapter fault');
+  if (unsupported.advertised !== 0) fail('a car with no mode 06 advertises nothing');
+
+  // Progress is reported against a total the caller can show.
+  let lastTotal = -1;
+  await runMode06(halfAnswering, (_done, total) => {
+    lastTotal = total;
+  });
+  if (lastTotal !== 2) fail(`progress should count the advertised monitors, got ${lastTotal}`);
+
+  console.log('  a refused monitor is counted, the chain is followed, and an adapter fault stops the walk');
+}
+
+// ── Result ──────────────────────────────────────────────────────────────────
+void checkMode06Walk().then(() => {
+  console.log('');
+  if (failures === 0) {
+    console.log('All checks passed.');
+  } else {
+    console.error(`${failures} check(s) failed.`);
+    process.exit(1);
+  }
+});
