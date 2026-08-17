@@ -37,6 +37,7 @@ import { CATALOG_SOURCE_ENTRY_COUNT, DTC_CATALOG } from '../src/lib/obd/dtc/cata
 import { isValidCode } from '../src/lib/obd/dtc/derive/parse';
 import { parseDtcList } from '../src/lib/obd/dtc/parser';
 import { resolveDtcDetail } from '../src/lib/obd/dtc/resolve';
+import { parseMonitorTests } from '../src/lib/obd/mode06';
 import { PID_DEFINITIONS } from '../src/lib/obd/pids';
 import { PROTOCOL_NAMES, PROTOCOL_SWEEP, describeProtocolReply } from '../src/lib/obd/protocols';
 import {
@@ -1765,6 +1766,37 @@ if (!brakeHint.includes('760') || !brakeHint.includes('Rear brake module')) {
 if (!brakeHint.includes('asleep')) fail('a stale module should be marked asleep in the hint');
 
 console.log('  every part is listed, greyed rows carry the reason, and "other" only shows when it holds something');
+
+// ── 33. Mode 06 records ──────────────────────────────────────────────────────
+section('Mode 06 records decode');
+
+// Two nine-byte records in one reply: catalyst bank 1, then an O2 heater.
+const twoRecords = parseMonitorTests('46' + '21850100C8006400FA' + '41851000320019004B');
+if (twoRecords.length !== 2) fail(`two records should decode, got ${twoRecords.length}`);
+if (twoRecords[0]?.monitorId !== 0x21) fail('first record should be MID 0x21');
+if (twoRecords[1]?.testId !== 0x85) fail('second record should carry TID 0x85');
+
+// A trailing fragment that cannot complete a record is dropped, not guessed at.
+const raggedRecords = parseMonitorTests('46' + '21850100C8006400FA' + '4185');
+if (raggedRecords.length !== 1) fail('an incomplete trailing record must be ignored');
+
+// Padding records are not tests.
+const paddedRecords = parseMonitorTests('46' + '000000000000000000' + '21850100C8006400FA');
+if (paddedRecords.length !== 1) fail('a zero monitor id is padding and must be skipped');
+
+// Known scaling is applied to the value and to both limits alike.
+const scaledTest = parseMonitorTests('46' + '2185020064003200C8');
+if (scaledTest[0] && Math.abs(scaledTest[0].value - 10) > 1e-9) {
+  fail(`0x02 scaling is x0.1, got ${scaledTest[0]?.value}`);
+}
+if (scaledTest[0] && !scaledTest[0].scaled) fail('a known scaling id should report scaled');
+
+// Unknown scaling falls through to raw counts rather than inventing a unit.
+const rawTest = parseMonitorTests('46' + '2185FF0064003200C8');
+if (rawTest[0]?.scaled !== false) fail('an unknown scaling id must report scaled: false');
+if (rawTest[0] && rawTest[0].value !== 100) fail('unscaled values stay raw counts');
+
+console.log('  records slice, padding is skipped, scaling applies to value and limits together');
 
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');

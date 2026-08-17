@@ -8,13 +8,8 @@ import { Screen } from '@/components/screen';
 import { Section } from '@/components/section';
 import { AppText } from '@/components/text';
 import { useObdConnection } from '@/features/connection/hooks/use-obd-connection';
-import {
-  parseMonitorTests,
-  parseReadiness,
-  type MonitorState,
-  type MonitorTest,
-  type ReadinessStatus,
-} from '@/lib/obd/monitors';
+import { parseMonitorTests, type MonitorTest } from '@/lib/obd/mode06';
+import { parseReadiness, type MonitorState, type ReadinessStatus } from '@/lib/obd/monitors';
 import { useTheme, useThemedStyles, type Theme } from '@/theme';
 
 const STATE_LABEL: Record<MonitorState, string> = {
