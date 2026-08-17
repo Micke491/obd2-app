@@ -1798,6 +1798,43 @@ if (rawTest[0] && rawTest[0].value !== 100) fail('unscaled values stay raw count
 
 console.log('  records slice, padding is skipped, scaling applies to value and limits together');
 
+// ── 34. Mode 06 limits are reported as given ─────────────────────────────────
+section('Mode 06 limits are reported as given');
+
+// Upper bound only: the minimum comes back as 0x0000.
+const upperOnly = parseMonitorTests('46' + '2185010064' + '0000' + '00C8');
+if (upperOnly[0]?.limit !== 'upper') {
+  fail(`a zero minimum means an upper bound only, got ${upperOnly[0]?.limit}`);
+}
+if (upperOnly[0]?.fraction !== null) fail('a one-sided test has no position between bounds');
+
+// Lower bound only: the maximum comes back as 0xFFFF.
+const lowerOnly = parseMonitorTests('46' + '2185010064' + '0032' + 'FFFF');
+if (lowerOnly[0]?.limit !== 'lower') {
+  fail(`a 0xFFFF maximum means a lower bound only, got ${lowerOnly[0]?.limit}`);
+}
+
+// Both bounds present, and the value's position between them is the whole
+// reason to read mode 06 rather than just its pass/fail.
+const bothEnds = parseMonitorTests('46' + '2185010064' + '0032' + '00FA');
+if (bothEnds[0]?.limit !== 'both') fail('two real bounds should report both');
+if (bothEnds[0] && Math.abs((bothEnds[0].fraction ?? -1) - 0.25) > 1e-9) {
+  fail(`100 between 50 and 250 is a quarter of the way, got ${bothEnds[0]?.fraction}`);
+}
+
+// Neither bound: nothing to judge, and nothing to draw.
+const noBounds = parseMonitorTests('46' + '2185010064' + '0000' + 'FFFF');
+if (noBounds[0]?.limit !== 'none') fail('no usable bounds should report none');
+if (noBounds[0]?.fraction !== null) fail('a fraction needs two bounds; it must be null otherwise');
+if (noBounds[0]?.passed !== true) fail('a test with no limits cannot be failed');
+
+// A value under a floor-only test fails on the floor, and is not rescued by
+// the 0xFFFF ceiling being read as a real number.
+const underFloor = parseMonitorTests('46' + '2185010010' + '0032' + 'FFFF');
+if (underFloor[0]?.passed !== false) fail('a value below its only bound has failed');
+
+console.log('  one-sided, two-sided and absent limits are each told apart');
+
 // ── Result ──────────────────────────────────────────────────────────────────
 console.log('');
 if (failures === 0) {

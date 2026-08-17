@@ -1,5 +1,8 @@
 import { extractPayload } from '../protocol';
 
+/** Which bounds the car actually supplied for a test. */
+export type TestLimit = 'both' | 'upper' | 'lower' | 'none';
+
 export type MonitorTest = {
   monitorId: number;
   monitorName: string;
@@ -10,6 +13,9 @@ export type MonitorTest = {
   unit: string;
   /** Null when the scaling ID is unrecognised and values are raw counts. */
   scaled: boolean;
+  limit: TestLimit;
+  /** Where the value sits between its bounds, 0–1. Null without both. */
+  fraction: number | null;
   passed: boolean;
 };
 
@@ -94,6 +100,16 @@ export function parseMonitorTests(hex: string): MonitorTest[] {
     const min = apply(rawMin);
     const max = apply(rawMax);
 
+    // J1979 reports an absent bound as the extreme of the range: a test with
+    // only a ceiling comes back with a zero floor, one with only a floor with
+    // a 0xFFFF ceiling. Reading those back as real numbers is what produced
+    // "allowed 0.00-200.00" for a test that never had a lower bound at all,
+    // and it is checked on the raw words because scaling would move them.
+    const hasLower = rawMin !== 0x0000;
+    const hasUpper = rawMax !== 0xffff;
+    const limit: TestLimit =
+      hasLower && hasUpper ? 'both' : hasUpper ? 'upper' : hasLower ? 'lower' : 'none';
+
     tests.push({
       monitorId,
       monitorName: OBDMID_NAMES[monitorId] ?? `Monitor 0x${monitorId.toString(16).toUpperCase()}`,
@@ -103,7 +119,9 @@ export function parseMonitorTests(hex: string): MonitorTest[] {
       max,
       unit: scaling?.unit ?? '',
       scaled: Boolean(scaling),
-      passed: value >= min && value <= max,
+      limit,
+      fraction: limit === 'both' && max > min ? (value - min) / (max - min) : null,
+      passed: (!hasLower || value >= min) && (!hasUpper || value <= max),
     });
   }
 
